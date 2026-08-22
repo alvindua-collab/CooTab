@@ -1,0 +1,1353 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<title>Tableaux collaboratifs — Question / Réponse / Critique</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<!-- SDK Firebase (mode "hors Claude", optionnel — ignoré si aucune config n'est renseignée plus bas) -->
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<style>
+  :root{
+    --board: #223229;
+    --board-line: rgba(245,241,230,0.06);
+    --chalk: #f5f1e6;
+    --chalk-dim: rgba(245,241,230,0.55);
+    --q-card: #7d9bb0;
+    --q-card-dark: #5f7d92;
+    --a-card: #d9a463;
+    --a-card-dark: #b9843f;
+    --c-card: #a98fc9;
+    --c-card-dark: #7f61a6;
+    --link: #f2c879;
+    --link-crit: #c9a8e8;
+    --danger: #c96a5a;
+    --panel: rgba(0,0,0,0.22);
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;background:var(--board);font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;}
+  a{color:inherit;}
+
+  .screen{height:100vh; display:none; flex-direction:column;}
+  .screen.visible{display:flex;}
+
+  button{
+    font-family:inherit;
+    font-size:13px;
+    border:none;
+    border-radius:7px;
+    padding:9px 14px;
+    cursor:pointer;
+    font-weight:600;
+    transition:transform .12s ease, box-shadow .12s ease;
+  }
+  button:active{transform:scale(0.96);}
+  button:disabled{opacity:0.4; cursor:not-allowed;}
+  input{font-family:inherit;}
+
+  /* ---------- Écran de connexion ---------- */
+  #screenLogin{align-items:center; justify-content:center;}
+  .login-card{
+    background:var(--panel);
+    border:1px dashed rgba(245,241,230,0.18);
+    border-radius:16px;
+    padding:36px 40px;
+    width:380px;
+    max-width:90vw;
+    text-align:center;
+  }
+  .login-card h1{
+    font-family:'Segoe Print','Comic Sans MS',cursive;
+    color:var(--chalk);
+    font-size:24px;
+    margin:0 0 6px;
+  }
+  .login-card p.sub{color:var(--chalk-dim); font-size:13px; margin:0 0 26px;}
+  .role-row{display:flex; gap:12px; justify-content:center;}
+  .role-btn{
+    flex:1;
+    padding:16px 10px;
+    border-radius:12px;
+    font-size:14px;
+    background:rgba(245,241,230,0.08);
+    color:var(--chalk);
+    border:1.5px solid rgba(245,241,230,0.18);
+  }
+  .role-btn:hover{background:rgba(245,241,230,0.15);}
+  .role-btn .emoji{display:block; font-size:26px; margin-bottom:6px;}
+  .teacher-form{margin-top:18px; display:none; text-align:left;}
+  .teacher-form.visible{display:block;}
+  .teacher-form label{color:var(--chalk-dim); font-size:12px; display:block; margin-bottom:6px;}
+  .teacher-form input[type=password]{
+    width:100%;
+    padding:9px 10px;
+    border-radius:7px;
+    border:1px solid rgba(245,241,230,0.25);
+    background:rgba(0,0,0,0.25);
+    color:var(--chalk);
+    font-size:14px;
+    margin-bottom:8px;
+  }
+  .teacher-form .row{display:flex; gap:8px;}
+  .teacher-form .row button{flex:1;}
+  .btn-primary{background:var(--link); color:#3a2a05;}
+  .btn-ghost{background:transparent; color:var(--chalk-dim); border:1px solid rgba(245,241,230,0.2);}
+  .login-error{color:var(--danger); font-size:12px; margin:6px 0 0; min-height:14px;}
+
+  /* ---------- Écran d'accueil ---------- */
+  #screenHome{padding:0;}
+  .home-topbar{
+    display:flex; align-items:center; gap:12px;
+    padding:14px 20px;
+    background:rgba(0,0,0,0.18);
+    border-bottom:1px dashed rgba(245,241,230,0.18);
+  }
+  .home-topbar h1{
+    font-family:'Segoe Print','Comic Sans MS',cursive;
+    color:var(--chalk); font-size:20px; margin:0; margin-right:auto;
+  }
+  .role-badge{
+    font-size:11px; color:var(--board); background:var(--link);
+    border-radius:20px; padding:4px 12px; font-weight:700;
+  }
+  .home-body{flex:1; overflow:auto; padding:24px 28px;}
+  .panel{
+    background:var(--panel);
+    border:1px dashed rgba(245,241,230,0.15);
+    border-radius:14px;
+    padding:18px 20px;
+    margin-bottom:20px;
+  }
+  .panel h2{color:var(--chalk); font-size:14px; margin:0 0 12px; text-transform:uppercase; letter-spacing:0.6px;}
+  .create-row{display:flex; gap:8px;}
+  .create-row input{
+    flex:1; padding:9px 10px; border-radius:7px;
+    border:1px solid rgba(245,241,230,0.25);
+    background:rgba(0,0,0,0.25); color:var(--chalk); font-size:14px;
+  }
+
+  .share-grid{display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start;}
+  .share-qr{
+    background:var(--chalk); padding:10px; border-radius:10px;
+    width:170px; height:170px; display:flex; align-items:center; justify-content:center;
+  }
+  .share-fields{flex:1; min-width:240px;}
+  .share-fields label{color:var(--chalk-dim); font-size:12px; display:block; margin-bottom:6px;}
+  .share-fields input{
+    width:100%; padding:9px 10px; border-radius:7px;
+    border:1px solid rgba(245,241,230,0.25);
+    background:rgba(0,0,0,0.25); color:var(--chalk); font-size:13px; margin-bottom:10px;
+  }
+  .share-note{color:var(--chalk-dim); font-size:11.5px; line-height:1.6;}
+
+  .board-list{display:flex; flex-direction:column; gap:10px;}
+  .board-row{
+    display:flex; align-items:center; gap:10px;
+    background:rgba(245,241,230,0.05);
+    border-radius:10px; padding:12px 14px;
+  }
+  .board-row .name{color:var(--chalk); font-weight:600; font-size:14px;}
+  .board-row .meta{color:var(--chalk-dim); font-size:11px; margin-top:2px;}
+  .board-row .grow{flex:1;}
+  .board-row button{font-size:12px; padding:7px 11px;}
+  .empty-note{color:var(--chalk-dim); font-size:13px; text-align:center; padding:20px 0;}
+
+  /* ---------- Écran du tableau (canvas) ---------- */
+  #screenBoard{}
+  .topbar{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:12px 16px;
+    background:rgba(0,0,0,0.18);
+    border-bottom:1px dashed rgba(245,241,230,0.18);
+    flex-wrap:wrap;
+  }
+  .title{
+    font-family:'Segoe Print','Comic Sans MS',cursive;
+    color:var(--chalk);
+    font-size:18px;
+    letter-spacing:0.5px;
+    margin-right:auto;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .title small{
+    color:var(--chalk-dim);
+    font-family:'Segoe UI',sans-serif;
+    font-size:11px;
+    font-weight:400;
+  }
+  .btn-home{background:transparent; color:var(--chalk); border:1.5px solid rgba(245,241,230,0.3);}
+  .btn-q{background:var(--q-card); color:#12202b;}
+  .btn-a{background:var(--a-card); color:#2b1c05;}
+  .btn-c{background:var(--c-card); color:#241536;}
+  .btn-link{background:transparent; color:var(--chalk); border:1.5px solid var(--chalk-dim);}
+  .btn-link.active{background:var(--link); color:#3a2a05; border-color:var(--link);}
+  .btn-reset{background:transparent; color:var(--danger); border:1.5px solid rgba(201,106,90,0.5); margin-left:6px;}
+
+  .zoom-group{
+    display:flex; align-items:center; gap:4px;
+    background:rgba(0,0,0,0.2); border-radius:8px; padding:3px;
+  }
+  .zoom-group button{background:transparent; color:var(--chalk); padding:6px 10px; font-size:15px; line-height:1;}
+  .zoom-group button:hover{background:rgba(245,241,230,0.12);}
+  .zoom-readout{color:var(--chalk-dim); font-size:12px; font-family:monospace; min-width:42px; text-align:center;}
+
+  .hint{color:var(--chalk-dim); font-size:12px; padding:0 16px 8px; min-height:14px;}
+
+  .canvas-wrap{flex:1; overflow:auto; position:relative; cursor:grab;}
+  .canvas-wrap.panning{cursor:grabbing;}
+  .canvas{
+    position:relative; width:2600px; height:1700px; transform-origin:0 0;
+    background-image:
+      linear-gradient(var(--board-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--board-line) 1px, transparent 1px);
+    background-size:40px 40px;
+  }
+
+  svg.links{position:absolute; top:0; left:0; pointer-events:none; width:2600px; height:1700px;}
+
+  .card{
+    position:absolute; width:210px; min-height:120px; border-radius:10px;
+    padding:10px 12px 12px;
+    box-shadow:0 4px 10px rgba(0,0,0,0.35), 0 1px 0 rgba(255,255,255,0.15) inset;
+    cursor:grab; user-select:none;
+  }
+  .card.dragging{cursor:grabbing; opacity:0.92; z-index:50;}
+  .card.q{background:linear-gradient(160deg, var(--q-card), var(--q-card-dark)); color:#0e1b23;}
+  .card.a{background:linear-gradient(160deg, var(--a-card), var(--a-card-dark)); color:#241705;}
+  .card.c{background:linear-gradient(160deg, var(--c-card), var(--c-card-dark)); color:#1e1230;}
+  .card.linkable{outline:3px dashed var(--link); outline-offset:2px;}
+  .card.link-source{outline:3px solid var(--link); outline-offset:2px;}
+
+  .card .eyebrow{
+    font-size:10px; text-transform:uppercase; letter-spacing:1.2px; opacity:0.65; font-weight:700;
+    margin-bottom:4px; display:flex; justify-content:space-between;
+  }
+  .card textarea{
+    width:100%; min-height:64px; resize:vertical; border:none;
+    background:rgba(255,255,255,0.28); border-radius:6px; padding:6px 7px;
+    font-size:13.5px; font-family:inherit; color:inherit; outline:none;
+  }
+  .card textarea::placeholder{color:rgba(0,0,0,0.4);}
+  .card .del{background:none; border:none; color:inherit; opacity:0.5; font-size:14px; padding:0 0 0 6px; cursor:pointer;}
+  .card .del:hover{opacity:1;}
+  .card .cam{background:none; border:none; color:inherit; opacity:0.6; font-size:13px; padding:0 0 0 6px; cursor:pointer;}
+  .card .cam:hover{opacity:1;}
+  .card .eyebrow .actions{display:flex; align-items:center;}
+
+  .photo-wrap{position:relative; margin-bottom:6px;}
+  .photo-wrap img{width:100%; max-height:140px; object-fit:cover; border-radius:6px; display:block; cursor:zoom-in;}
+  .photo-rm{
+    position:absolute; top:4px; right:4px; width:20px; height:20px; border-radius:50%;
+    border:none; background:rgba(0,0,0,0.55); color:#fff; font-size:11px; line-height:1; padding:0; cursor:pointer;
+  }
+  .photo-rm:hover{background:rgba(0,0,0,0.75);}
+
+  .author-row{display:flex; align-items:baseline; gap:4px; flex-wrap:wrap; margin-bottom:6px;}
+  .author-prefix{font-size:10.5px; font-weight:600; opacity:0.75;}
+  .author-input{
+    flex:1; min-width:40px; border:none; border-bottom:1px solid rgba(0,0,0,0.25);
+    background:transparent; font-family:inherit; font-size:11.5px; color:inherit; padding:1px 2px; outline:none;
+  }
+  .author-input::placeholder{color:rgba(0,0,0,0.35);}
+
+  .date-row{font-size:10px; font-style:italic; opacity:0.75; margin:-2px 0 6px;}
+
+  .pin{
+    position:absolute; top:-6px; left:50%; transform:translateX(-50%);
+    width:11px; height:11px; border-radius:50%; background:#e8483a; box-shadow:0 2px 3px rgba(0,0,0,0.4);
+  }
+
+  .empty-msg{
+    position:absolute; top:40px; left:50%; transform:translateX(-50%);
+    color:var(--chalk-dim); font-family:'Segoe Print','Comic Sans MS',cursive; font-size:16px;
+    text-align:center; width:380px; line-height:1.5;
+  }
+
+  .status{position:fixed; bottom:10px; right:14px; font-size:11px; color:var(--chalk-dim); font-family:monospace;}
+
+  .lightbox{
+    display:none; position:fixed; inset:0; background:rgba(10,14,11,0.92); z-index:1000;
+    align-items:center; justify-content:center; flex-direction:column; padding:32px;
+  }
+  .lightbox img{max-width:min(90vw, 900px); max-height:70vh; border-radius:10px; box-shadow:0 12px 40px rgba(0,0,0,0.55);}
+  .lightbox-caption{color:var(--chalk); margin-top:18px; max-width:700px; text-align:center; font-size:15px; line-height:1.6; white-space:pre-wrap;}
+  .lightbox-close{
+    position:absolute; top:20px; right:24px; width:38px; height:38px; border-radius:50%; border:none;
+    background:rgba(245,241,230,0.15); color:var(--chalk); font-size:16px; cursor:pointer;
+  }
+  .lightbox-close:hover{background:rgba(245,241,230,0.28);}
+
+  .storage-warning{
+    display:none;
+    position:fixed;
+    top:0; left:0; right:0;
+    z-index:2000;
+    background:#c96a5a;
+    color:#2a1512;
+    font-size:12.5px;
+    text-align:center;
+    padding:8px 14px;
+    font-weight:600;
+  }
+  .storage-warning.info{
+    background:var(--link);
+    color:#3a2a05;
+  }
+
+  .backup-card{
+    background:var(--board);
+    border:1px dashed rgba(245,241,230,0.2);
+    border-radius:14px;
+    padding:24px 28px;
+    width:460px;
+    max-width:90vw;
+    max-height:75vh;
+    overflow:auto;
+  }
+  .backup-card h2{color:var(--chalk); font-size:16px; margin:0 0 8px;}
+  .backup-row{
+    display:flex; align-items:center; gap:10px;
+    background:rgba(245,241,230,0.05);
+    border-radius:8px; padding:10px 12px; margin-top:8px;
+  }
+  .backup-row .grow{flex:1; color:var(--chalk); font-size:13px;}
+  .backup-empty{color:var(--chalk-dim); font-size:13px; text-align:center; padding:16px 0;}
+</style>
+</head>
+<body>
+<div class="storage-warning" id="storageWarning">
+  ⚠️ Le stockage partagé n'est pas disponible dans ce contexte d'affichage : les tableaux, la synchronisation et les sauvegardes ne fonctionneront pas ici.
+</div>
+
+<!-- ===================== ÉCRAN DE CONNEXION ===================== -->
+<div class="screen visible" id="screenLogin">
+  <div class="login-card">
+    <h1>🖇️ Tableaux collaboratifs</h1>
+    <p class="sub">Choisissez votre rôle pour continuer</p>
+    <div class="role-row">
+      <button class="role-btn" id="roleEleve"><span class="emoji">🎓</span>Élève</button>
+      <button class="role-btn" id="roleProf"><span class="emoji">🧑‍🏫</span>Professeur</button>
+    </div>
+    <div class="teacher-form" id="teacherForm">
+      <label for="teacherPassword">Mot de passe professeur</label>
+      <input type="password" id="teacherPassword" placeholder="••••••••">
+      <div class="row">
+        <button class="btn-primary" id="teacherSubmit">Se connecter</button>
+        <button class="btn-ghost" id="teacherCancel">Annuler</button>
+      </div>
+      <div class="login-error" id="loginError"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== ÉCRAN D'ACCUEIL ===================== -->
+<div class="screen" id="screenHome">
+  <div class="home-topbar">
+    <h1>🖇️ Tableaux collaboratifs</h1>
+    <span class="role-badge" id="homeRoleBadge">Élève</span>
+    <button class="btn-ghost" id="logoutBtn">Se déconnecter</button>
+  </div>
+  <div class="home-body">
+    <div class="panel" id="createPanel" style="display:none;">
+      <h2>Créer un tableau</h2>
+      <div class="create-row">
+        <input type="text" id="newBoardName" placeholder="Nom du tableau (ex. Chapitre 3 — Les fractions)">
+        <button class="btn-primary" id="createBoardBtn">+ Créer</button>
+      </div>
+    </div>
+
+    <div class="panel" id="sharePanel" style="display:none;">
+      <h2>Partager l'application</h2>
+      <div class="share-grid">
+        <div class="share-qr" id="qrcodeBox"></div>
+        <div class="share-fields">
+          <label for="shareUrl">Adresse à faire scanner par les élèves</label>
+          <input type="text" id="shareUrl" placeholder="https://…">
+          <button class="btn-primary" id="generateQrBtn">Générer le QR code</button>
+          <p class="share-note">
+            Le QR code n'est utile que si cette adresse est réellement accessible depuis les appareils des élèves
+            (un lien de partage Claude, ou cette page une fois hébergée sur un site/serveur de l'établissement).
+            Pour la partager par téléchargement, utilisez le bouton de téléchargement du fichier fourni dans la conversation :
+            chaque élève ouvrant le fichier localement pourra utiliser l'application, mais seuls les appareils qui
+            chargent la <strong>même page à la même adresse</strong> partagent réellement les mêmes tableaux.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Tableaux disponibles</h2>
+      <div class="board-list" id="boardList"></div>
+      <div class="empty-note" id="boardEmptyNote" style="display:none;">
+        Aucun tableau pour l'instant. Demandez à votre professeur d'en créer un.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== ÉCRAN DU TABLEAU ===================== -->
+<div class="screen" id="screenBoard">
+  <div class="topbar">
+    <button class="btn-home" id="backHome">← Accueil</button>
+    <div class="title" id="boardTitle">🖇️ Tableau <small>tableau collaboratif</small></div>
+    <button class="btn-q" id="addQ">+ Cadre question</button>
+    <button class="btn-a" id="addA">+ Cadre réponse</button>
+    <button class="btn-c" id="addC">+ Cadre critique / complément</button>
+    <button class="btn-link" id="linkMode">🔗 Relier</button>
+    <button class="btn-reset" id="resetAll" style="display:none;">Tout effacer</button>
+    <button class="btn-home" id="backupsBtn" style="display:none;">💾 Sauvegardes</button>
+    <div class="zoom-group">
+      <button id="zoomOut" title="Dézoomer">−</button>
+      <span class="zoom-readout" id="zoomReadout">100%</span>
+      <button id="zoomIn" title="Zoomer">+</button>
+      <button id="zoomReset" title="Réinitialiser le zoom">⟲</button>
+    </div>
+  </div>
+  <div class="hint" id="hint"></div>
+  <div class="canvas-wrap" id="canvasWrap">
+    <div class="canvas" id="canvas">
+      <svg class="links" id="links"></svg>
+      <div class="empty-msg" id="emptyMsg">Le tableau est vide.<br>Ajoutez des cadres question, réponse et critique/complément, puis reliez-les.</div>
+    </div>
+  </div>
+  <div class="status" id="status">chargement…</div>
+  <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none">
+  <div class="lightbox" id="lightbox">
+    <button class="lightbox-close" id="lightboxClose">✕</button>
+    <img id="lightboxImg" alt="Photo en grand format">
+    <div class="lightbox-caption" id="lightboxCaption"></div>
+  </div>
+  <div class="lightbox" id="backupModal">
+    <button class="lightbox-close" id="backupClose">✕</button>
+    <div class="backup-card">
+      <h2>Sauvegardes automatiques</h2>
+      <p class="share-note">
+        Une sauvegarde de ce tableau est prise automatiquement toutes les 5 minutes (8 dernières conservées).
+        Les photos ne sont pas incluses dans les sauvegardes, pour ne pas saturer le stockage partagé.
+      </p>
+      <div id="backupList"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   RÔLE — mot de passe professeur en clair côté client.
+   Ce n'est PAS une sécurité réelle (visible dans le code source) :
+   cela sert seulement à distinguer les deux usages en classe.
+   Modifiez la valeur ci-dessous pour changer le mot de passe.
+   ============================================================ */
+const TEACHER_PASSWORD = 'prof2026';
+
+/* ============================================================
+   CONFIGURATION FIREBASE (optionnelle) — à remplir pour rendre
+   l'application indépendante de Claude, avec une vraie synchronisation
+   entre appareils. Laissez apiKey vide pour ignorer complètement Firebase
+   (l'app se rabat alors sur le mode local du navigateur).
+
+   Pour obtenir ces valeurs : console.firebase.google.com → créer un
+   projet → ajouter une application Web → copier l'objet de config
+   fourni. Voir les instructions complètes données par Claude.
+   ============================================================ */
+const FIREBASE_CONFIG = {
+  	apiKey: "AIzaSyDEmjr3CoTReUUAO7s9qGonyi1HY2LLQD0",
+  	authDomain: "cootab-7f445.firebaseapp.com",
+  	projectId: "cootab-7f445",
+  	storageBucket: "cootab-7f445.firebasestorage.app",
+  	messagingSenderId: "124531519718",
+  	appId: "1:124531519718:web:6a3b9e95616717326e8b27",
+  	measurementId: "G-KFZFXL0QLZ"
+};
+
+let role = null; // 'eleve' | 'professeur'
+let boardsIndex = [];
+let currentBoardId = null;
+let boardStorageKey = null;
+let boardPollTimer = null;
+let storageMode = 'cloud'; // 'cloud' (Claude.ai) | 'firebase' (indépendant) | 'local' (un seul appareil) | 'none'
+
+/* ============================================================
+   Couche de stockage : trois modes possibles, dans cet ordre de priorité —
+   1) window['storage'] natif (dans l'aperçu Claude.ai)
+   2) Firebase Firestore (si FIREBASE_CONFIG est renseigné) — indépendant
+      de Claude, vraiment partagé entre tous les appareils
+   3) localStorage — repli local, un seul appareil, pour tester sans rien configurer
+   ============================================================ */
+const nativeStorage = (typeof window['storage'] !== 'undefined') ? window['storage'] : null;
+const LOCAL_PREFIX = 'tqr:';
+
+let firestoreDb = null;
+if(!nativeStorage && FIREBASE_CONFIG.apiKey){
+  try{
+    firebase.initializeApp(FIREBASE_CONFIG);
+    firestoreDb = firebase.firestore();
+  }catch(e){
+    console.error('Échec d\'initialisation Firebase', e);
+    firestoreDb = null;
+  }
+}
+
+async function firestoreGet(key){
+  const snap = await firestoreDb.collection('tqr_kv').doc(key).get();
+  if(!snap.exists) return null;
+  return { key, value: snap.data().value, shared: true };
+}
+async function firestoreSet(key, value){
+  await firestoreDb.collection('tqr_kv').doc(key).set({ value, updatedAt: Date.now() });
+  return { key, value, shared: true };
+}
+async function firestoreDelete(key){
+  await firestoreDb.collection('tqr_kv').doc(key).delete();
+  return { key, deleted: true, shared: true };
+}
+
+const storageAdapter = {
+  async get(key, shared){
+    if(nativeStorage) return nativeStorage.get(key, shared);
+    if(firestoreDb){
+      try{ return await firestoreGet(key); }
+      catch(e){ console.error('Erreur Firestore (lecture)', e); return null; }
+    }
+    const raw = localStorage.getItem(LOCAL_PREFIX + key);
+    return raw === null ? null : { key, value: raw, shared: !!shared };
+  },
+  async set(key, value, shared){
+    if(nativeStorage) return nativeStorage.set(key, value, shared);
+    if(firestoreDb){
+      try{ return await firestoreSet(key, value); }
+      catch(e){ console.error('Erreur Firestore (écriture)', e); return null; }
+    }
+    try{
+      localStorage.setItem(LOCAL_PREFIX + key, value);
+      return { key, value, shared: !!shared };
+    }catch(e){
+      console.error('Stockage local saturé ou indisponible', e);
+      return null;
+    }
+  },
+  async delete(key, shared){
+    if(nativeStorage) return nativeStorage.delete(key, shared);
+    if(firestoreDb){
+      try{ return await firestoreDelete(key); }
+      catch(e){ console.error('Erreur Firestore (suppression)', e); return null; }
+    }
+    localStorage.removeItem(LOCAL_PREFIX + key);
+    return { key, deleted: true, shared: !!shared };
+  }
+};
+
+(async function detectStorageMode(){
+  const banner = document.getElementById('storageWarning');
+
+  if(nativeStorage){
+    storageMode = 'cloud';
+    banner.style.display = 'none';
+    return;
+  }
+
+  if(FIREBASE_CONFIG.apiKey){
+    if(!firestoreDb){
+      storageMode = 'none';
+      banner.textContent = "⚠️ Configuration Firebase invalide (vérifiez FIREBASE_CONFIG) : rien ne sera synchronisé.";
+      banner.style.display = 'block';
+      return;
+    }
+    try{
+      await firestoreSet('__tqr_diag__', String(Date.now()));
+      storageMode = 'firebase';
+      banner.classList.add('info');
+      banner.textContent = "🔥 Mode Firebase actif : ce tableau est synchronisé entre tous les appareils qui ouvrent cette page.";
+      banner.style.display = 'block';
+    }catch(e){
+      console.error('Firebase configuré mais inaccessible :', e);
+      storageMode = 'none';
+      banner.textContent = "⚠️ Firebase configuré mais inaccessible (vérifiez la config et les règles Firestore) : rien ne sera synchronisé.";
+      banner.style.display = 'block';
+    }
+    return;
+  }
+
+  try{
+    const testKey = '__tqr_diag__';
+    localStorage.setItem(testKey, '1');
+    localStorage.removeItem(testKey);
+    storageMode = 'local';
+    banner.classList.add('info');
+    banner.textContent = "ℹ️ Mode local (hors Claude.ai, Firebase non configuré) : ce tableau n'est enregistré que dans ce navigateur, sur cet appareil.";
+    banner.style.display = 'block';
+  }catch(e){
+    storageMode = 'none';
+    banner.textContent = "⚠️ Aucun stockage disponible (navigation privée ou stockage désactivé) : rien ne sera enregistré ici.";
+    banner.style.display = 'block';
+  }
+})();
+
+function showScreen(id){
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('visible'));
+  document.getElementById(id).classList.add('visible');
+}
+
+/* ---------------- Écran de connexion ---------------- */
+document.getElementById('roleEleve').onclick = () => {
+  role = 'eleve';
+  enterHome();
+};
+document.getElementById('roleProf').onclick = () => {
+  document.getElementById('teacherForm').classList.add('visible');
+  document.getElementById('teacherPassword').focus();
+};
+document.getElementById('teacherCancel').onclick = () => {
+  document.getElementById('teacherForm').classList.remove('visible');
+  document.getElementById('loginError').textContent = '';
+  document.getElementById('teacherPassword').value = '';
+};
+document.getElementById('teacherSubmit').onclick = submitTeacherPassword;
+document.getElementById('teacherPassword').addEventListener('keydown', (e) => {
+  if(e.key === 'Enter') submitTeacherPassword();
+});
+function submitTeacherPassword(){
+  const val = document.getElementById('teacherPassword').value;
+  if(val === TEACHER_PASSWORD){
+    role = 'professeur';
+    enterHome();
+  } else {
+    document.getElementById('loginError').textContent = 'Mot de passe incorrect.';
+  }
+}
+
+function enterHome(){
+  document.getElementById('teacherPassword').value = '';
+  document.getElementById('loginError').textContent = '';
+  document.getElementById('teacherForm').classList.remove('visible');
+  showScreen('screenHome');
+  document.getElementById('homeRoleBadge').textContent = role === 'professeur' ? 'Professeur' : 'Élève';
+  document.getElementById('createPanel').style.display = role === 'professeur' ? 'block' : 'none';
+  document.getElementById('sharePanel').style.display = role === 'professeur' ? 'block' : 'none';
+  if(role === 'professeur'){
+    document.getElementById('shareUrl').value = window.location.href;
+  }
+  loadBoardsIndex();
+}
+
+document.getElementById('logoutBtn').onclick = () => {
+  role = null;
+  currentBoardId = null;
+  showScreen('screenLogin');
+};
+
+/* ---------------- Gestion des tableaux (accueil) ---------------- */
+function uid(){ return 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+
+async function loadBoardsIndex(){
+  try{
+    const res = await storageAdapter.get('boards-index', true);
+    boardsIndex = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){
+    boardsIndex = [];
+  }
+  renderBoardList();
+}
+async function saveBoardsIndex(){
+  try{ await storageAdapter.set('boards-index', JSON.stringify(boardsIndex), true); }
+  catch(e){ console.error('Erreur de sauvegarde de la liste des tableaux', e); }
+}
+
+function renderBoardList(){
+  const list = document.getElementById('boardList');
+  const emptyNote = document.getElementById('boardEmptyNote');
+  list.innerHTML = '';
+  emptyNote.style.display = boardsIndex.length ? 'none' : 'block';
+
+  boardsIndex.slice().sort((a,b) => b.createdAt - a.createdAt).forEach(board => {
+    const row = document.createElement('div');
+    row.className = 'board-row';
+
+    const info = document.createElement('div');
+    info.className = 'grow';
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = board.name;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = 'Créé le ' + new Date(board.createdAt).toLocaleString('fr-FR', { dateStyle:'short', timeStyle:'short' });
+    info.appendChild(name); info.appendChild(meta);
+    row.appendChild(info);
+
+    const openBtn = document.createElement('button');
+    openBtn.className = 'btn-primary';
+    openBtn.textContent = 'Ouvrir';
+    openBtn.onclick = () => openBoard(board.id, board.name);
+    row.appendChild(openBtn);
+
+    if(role === 'professeur'){
+      const renameBtn = document.createElement('button');
+      renameBtn.className = 'btn-ghost';
+      renameBtn.textContent = 'Renommer';
+      renameBtn.onclick = () => renameBoard(board.id);
+      row.appendChild(renameBtn);
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn-reset';
+      delBtn.textContent = 'Supprimer';
+      delBtn.onclick = () => deleteBoard(board.id);
+      row.appendChild(delBtn);
+    }
+
+    list.appendChild(row);
+  });
+}
+
+document.getElementById('createBoardBtn').onclick = async () => {
+  const input = document.getElementById('newBoardName');
+  const name = input.value.trim();
+  if(!name) return;
+  boardsIndex.push({ id: uid(), name, createdAt: Date.now() });
+  input.value = '';
+  await saveBoardsIndex();
+  renderBoardList();
+};
+document.getElementById('newBoardName').addEventListener('keydown', (e) => {
+  if(e.key === 'Enter') document.getElementById('createBoardBtn').click();
+});
+
+async function renameBoard(id){
+  const board = boardsIndex.find(b => b.id === id);
+  if(!board) return;
+  const newName = prompt('Nouveau nom du tableau :', board.name);
+  if(!newName || !newName.trim()) return;
+  board.name = newName.trim();
+  await saveBoardsIndex();
+  renderBoardList();
+}
+
+async function deleteBoard(id){
+  const board = boardsIndex.find(b => b.id === id);
+  if(!board) return;
+  if(!confirm(`Supprimer définitivement le tableau "${board.name}" et tout son contenu ?`)) return;
+  boardsIndex = boardsIndex.filter(b => b.id !== id);
+  await saveBoardsIndex();
+  try{ await storageAdapter.delete(`board:${id}`, true); }catch(e){ /* déjà absent */ }
+  renderBoardList();
+}
+
+/* ---------------- Partage : QR code ---------------- */
+let qrInstance = null;
+function generateQr(){
+  const url = document.getElementById('shareUrl').value.trim();
+  const box = document.getElementById('qrcodeBox');
+  box.innerHTML = '';
+  qrInstance = null;
+  if(!url) return;
+  qrInstance = new QRCode(box, { text: url, width: 150, height: 150, colorDark:'#223229', colorLight:'#f5f1e6' });
+}
+document.getElementById('generateQrBtn').onclick = generateQr;
+document.getElementById('shareUrl').addEventListener('keydown', (e) => { if(e.key === 'Enter') generateQr(); });
+
+/* ================================================================
+   ÉCRAN DU TABLEAU (canvas Question / Réponse / Critique)
+   ================================================================ */
+const CARD_W = 210, CARD_H = 120;
+const ZOOM_MIN = 0.3, ZOOM_MAX = 2.5;
+
+const LABELS = { question: 'Question', answer: 'Réponse', critique: 'Critique / complément' };
+const AUTHOR_PREFIX = { question: 'Question proposée par', answer: 'Réponse proposée par', critique: 'Proposé par' };
+const PLACEHOLDERS = {
+  question: 'Écrivez la question…',
+  answer: 'Écrivez la réponse…',
+  critique: 'Écrivez la critique ou le complément…'
+};
+
+function isValidLink(fromType, toType){
+  if(fromType === 'answer') return toType === 'question';
+  if(fromType === 'critique') return toType === 'question' || toType === 'answer' || toType === 'critique';
+  return false;
+}
+function canBeLinkSource(type){ return type === 'answer' || type === 'critique'; }
+function canHavePhoto(type){ return type === 'question' || type === 'answer' || type === 'critique'; }
+
+let state = { frames: [], links: [] };
+let linkMode = false;
+let linkSource = null;
+let dragging = null;
+let panning = null;
+let editingId = null;
+let lastSavedJSON = null;
+let zoom = 1;
+let pendingPhotoFrameId = null;
+let dateVisibleIds = new Set();
+let backupTimer = null;
+const BACKUP_INTERVAL_MS = 5 * 60 * 1000;
+const MAX_BACKUPS = 8;
+
+const canvas = document.getElementById('canvas');
+const photoInput = document.getElementById('photoInput');
+const lightbox = document.getElementById('lightbox');
+const lightboxImg = document.getElementById('lightboxImg');
+const lightboxCaption = document.getElementById('lightboxCaption');
+const linksSvg = document.getElementById('links');
+const hint = document.getElementById('hint');
+const statusEl = document.getElementById('status');
+const emptyMsg = document.getElementById('emptyMsg');
+const canvasWrap = document.getElementById('canvasWrap');
+const linkModeBtn = document.getElementById('linkMode');
+const zoomReadout = document.getElementById('zoomReadout');
+
+function frameUid(){ return 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+function setStatus(txt){ statusEl.textContent = txt; }
+
+function formatDate(ts){
+  if(!ts) return 'date inconnue';
+  return new Date(ts).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function openLightbox(frame){
+  lightboxImg.src = frame.photo;
+  const parts = [];
+  if(frame.author) parts.push(`${AUTHOR_PREFIX[frame.type]} ${frame.author}`);
+  if(frame.text) parts.push(frame.text);
+  lightboxCaption.textContent = parts.join(' — ');
+  lightbox.style.display = 'flex';
+}
+function closeLightbox(){ lightbox.style.display = 'none'; lightboxImg.src = ''; }
+document.getElementById('lightboxClose').onclick = closeLightbox;
+lightbox.addEventListener('click', (e) => { if(e.target === lightbox) closeLightbox(); });
+
+function setLinkMode(on){
+  linkMode = on;
+  linkModeBtn.classList.toggle('active', linkMode);
+  if(!on) linkSource = null;
+}
+
+function updateHint(){
+  if(!linkMode){ hint.textContent = ''; return; }
+  if(!linkSource){
+    hint.textContent = "Mode liaison actif : cliquez sur un cadre réponse ou critique/complément pour démarrer la liaison.";
+  } else {
+    const source = getFrame(linkSource);
+    const target = source && source.type === 'answer' ? 'un cadre question'
+      : 'un cadre question, réponse ou critique/complément';
+    hint.textContent = `Cliquez maintenant sur ${target} pour la relier. (Échap pour annuler)`;
+  }
+}
+
+/* --- Zoom --- */
+function applyZoom(){
+  canvas.style.transform = `scale(${zoom})`;
+  zoomReadout.textContent = Math.round(zoom * 100) + '%';
+}
+function zoomAt(clientX, clientY, factor){
+  const wrapRect = canvasWrap.getBoundingClientRect();
+  const localX = clientX - wrapRect.left + canvasWrap.scrollLeft;
+  const localY = clientY - wrapRect.top + canvasWrap.scrollTop;
+  const canvasX = localX / zoom;
+  const canvasY = localY / zoom;
+  const newZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom * factor));
+  if(newZoom === zoom) return;
+  zoom = newZoom;
+  applyZoom();
+  canvasWrap.scrollLeft = canvasX * zoom - (clientX - wrapRect.left);
+  canvasWrap.scrollTop = canvasY * zoom - (clientY - wrapRect.top);
+}
+canvasWrap.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const clampedDelta = Math.max(-100, Math.min(100, e.deltaY));
+  const factor = Math.exp(-clampedDelta * 0.0022);
+  zoomAt(e.clientX, e.clientY, factor);
+}, { passive:false });
+document.getElementById('zoomIn').onclick = () => {
+  const r = canvasWrap.getBoundingClientRect();
+  zoomAt(r.left + r.width/2, r.top + r.height/2, 1.2);
+};
+document.getElementById('zoomOut').onclick = () => {
+  const r = canvasWrap.getBoundingClientRect();
+  zoomAt(r.left + r.width/2, r.top + r.height/2, 1/1.2);
+};
+document.getElementById('zoomReset').onclick = () => { zoom = 1; applyZoom(); };
+
+/* --- Panning --- */
+canvasWrap.addEventListener('mousedown', (e) => {
+  if(e.target.closest('.card')) return;
+  panning = { startX: e.clientX, startY: e.clientY, scrollLeft: canvasWrap.scrollLeft, scrollTop: canvasWrap.scrollTop };
+  canvasWrap.classList.add('panning');
+});
+window.addEventListener('mousemove', (e) => {
+  if(!panning) return;
+  canvasWrap.scrollLeft = panning.scrollLeft - (e.clientX - panning.startX);
+  canvasWrap.scrollTop = panning.scrollTop - (e.clientY - panning.startY);
+});
+window.addEventListener('mouseup', () => {
+  if(panning){ panning = null; canvasWrap.classList.remove('panning'); }
+});
+
+function toCanvasCoords(clientX, clientY){
+  const wrapRect = canvasWrap.getBoundingClientRect();
+  return {
+    x: (clientX - wrapRect.left + canvasWrap.scrollLeft) / zoom,
+    y: (clientY - wrapRect.top + canvasWrap.scrollTop) / zoom
+  };
+}
+
+/* --- Chargement / sauvegarde d'un tableau précis --- */
+async function loadBoardState(){
+  try{
+    const res = await storageAdapter.get(boardStorageKey, true);
+    if(res && res.value){
+      state = JSON.parse(res.value);
+      if(!state.frames) state.frames = [];
+      if(!state.links) state.links = [];
+    } else {
+      state = { frames: [], links: [] };
+    }
+    lastSavedJSON = res && res.value ? res.value : null;
+    setStatus('synchronisé');
+  }catch(e){
+    state = { frames: [], links: [] };
+    setStatus('nouveau tableau');
+  }
+  render();
+}
+async function saveBoardState(){
+  const json = JSON.stringify(state);
+  if(json === lastSavedJSON) return;
+  try{
+    const res = await storageAdapter.set(boardStorageKey, json, true);
+    if(res){ lastSavedJSON = json; setStatus('enregistré'); }
+    else { setStatus('échec de sauvegarde'); }
+  }catch(e){
+    setStatus('erreur de sauvegarde');
+    console.error(e);
+  }
+}
+
+/* --- Sauvegardes automatiques (sans les photos, pour limiter la taille) --- */
+function backupKey(){ return `board-backup:${currentBoardId}`; }
+
+async function takeBackup(){
+  if(!currentBoardId) return;
+  let backups = [];
+  try{
+    const res = await storageAdapter.get(backupKey(), true);
+    if(res && res.value) backups = JSON.parse(res.value);
+  }catch(e){
+    // Aucune sauvegarde précédente pour ce tableau : c'est normal, on repart d'une liste vide.
+    backups = [];
+  }
+  backups.push({
+    ts: Date.now(),
+    frames: state.frames.map(({ photo, ...rest }) => rest),
+    links: state.links
+  });
+  if(backups.length > MAX_BACKUPS) backups = backups.slice(backups.length - MAX_BACKUPS);
+  try{
+    await storageAdapter.set(backupKey(), JSON.stringify(backups), true);
+  }catch(e){
+    console.error('Erreur de sauvegarde automatique', e);
+  }
+}
+
+async function loadBackups(){
+  try{
+    const res = await storageAdapter.get(backupKey(), true);
+    return res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){ return []; }
+}
+
+async function renderBackupList(){
+  const list = document.getElementById('backupList');
+  list.innerHTML = '<div class="backup-empty">Chargement…</div>';
+  const backups = await loadBackups();
+  list.innerHTML = '';
+  if(!backups.length){
+    list.innerHTML = '<div class="backup-empty">Aucune sauvegarde pour l\'instant. La première sera prise automatiquement dans les 5 minutes suivant l\'ouverture du tableau.</div>';
+    return;
+  }
+  backups.slice().reverse().forEach(b => {
+    const row = document.createElement('div');
+    row.className = 'backup-row';
+    const label = document.createElement('div');
+    label.className = 'grow';
+    label.textContent = formatDate(b.ts) + ' — ' + b.frames.length + ' cadre(s)';
+    row.appendChild(label);
+    const restoreBtn = document.createElement('button');
+    restoreBtn.className = 'btn-primary';
+    restoreBtn.textContent = 'Restaurer';
+    restoreBtn.onclick = () => restoreBackup(b);
+    row.appendChild(restoreBtn);
+    list.appendChild(row);
+  });
+}
+
+async function restoreBackup(snapshot){
+  const ok = confirm(
+    `Restaurer le tableau tel qu'il était le ${formatDate(snapshot.ts)} ?\n` +
+    `Le contenu actuel sera remplacé (les photos actuellement présentes seront conservées si le cadre correspondant existe encore, mais les cadres supprimés depuis ne récupèrent pas leur photo).`
+  );
+  if(!ok) return;
+  // on réintègre les photos actuellement connues pour les cadres qui existent toujours
+  const currentPhotos = new Map(state.frames.map(f => [f.id, f.photo]));
+  state = {
+    frames: snapshot.frames.map(f => ({ ...f, photo: currentPhotos.get(f.id) || null })),
+    links: snapshot.links
+  };
+  render();
+  await saveBoardState();
+  document.getElementById('backupModal').style.display = 'none';
+}
+
+document.getElementById('backupsBtn').onclick = () => {
+  document.getElementById('backupModal').style.display = 'flex';
+  renderBackupList();
+};
+document.getElementById('backupClose').onclick = () => {
+  document.getElementById('backupModal').style.display = 'none';
+};
+document.getElementById('backupModal').addEventListener('click', (e) => {
+  if(e.target.id === 'backupModal') document.getElementById('backupModal').style.display = 'none';
+});
+
+function addFrame(type){
+  const count = state.frames.length;
+  const x = 60 + (count % 7) * 60 + Math.random()*40;
+  const y = 60 + Math.floor(count/7) * 60 + Math.random()*40;
+  const frame = { id: frameUid(), type, text: '', x, y, author: '', createdAt: Date.now() };
+  state.frames.push(frame);
+  render();
+  saveBoardState();
+  takeBackup(); // sauvegarde immédiate à chaque ajout de cadre
+}
+function deleteFrame(id){
+  state.frames = state.frames.filter(f => f.id !== id);
+  state.links = state.links.filter(l => l.from !== id && l.to !== id);
+  if(linkSource === id) linkSource = null;
+  render();
+  saveBoardState();
+  takeBackup(); // sauvegarde immédiate à chaque suppression de cadre
+}
+function getFrame(id){ return state.frames.find(f => f.id === id); }
+
+function anchorPoint(frame, towardX, towardY){
+  const cx = frame.x + CARD_W/2, cy = frame.y + CARD_H/2;
+  let dx = towardX - cx, dy = towardY - cy;
+  if(dx === 0 && dy === 0) return {x:cx, y:cy};
+  const halfW = CARD_W/2, halfH = CARD_H/2;
+  const scale = Math.min(
+    Math.abs(dx) > 0.001 ? halfW/Math.abs(dx) : Infinity,
+    Math.abs(dy) > 0.001 ? halfH/Math.abs(dy) : Infinity
+  );
+  return { x: cx + dx*scale, y: cy + dy*scale };
+}
+
+function compressImage(file, maxDim, quality){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        if(w > maxDim || h > maxDim){
+          if(w > h){ h = Math.round(h * maxDim / w); w = maxDim; }
+          else { w = Math.round(w * maxDim / h); h = maxDim; }
+        }
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(c.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+photoInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  const frameId = pendingPhotoFrameId;
+  pendingPhotoFrameId = null;
+  e.target.value = '';
+  if(!file || !frameId) return;
+  const frame = getFrame(frameId);
+  if(!frame) return;
+  try{
+    setStatus('traitement de la photo…');
+    frame.photo = await compressImage(file, 700, 0.7);
+    render();
+    saveBoardState();
+  }catch(err){
+    console.error(err);
+    setStatus('échec du chargement de la photo');
+  }
+});
+
+function render(){
+  emptyMsg.style.display = state.frames.length ? 'none' : 'block';
+  canvas.querySelectorAll('.card').forEach(el => el.remove());
+
+  state.frames.forEach(frame => {
+    const el = document.createElement('div');
+    const typeClass = frame.type === 'question' ? 'q' : (frame.type === 'answer' ? 'a' : 'c');
+    el.className = 'card ' + typeClass;
+    el.style.left = frame.x + 'px';
+    el.style.top = frame.y + 'px';
+    el.dataset.id = frame.id;
+
+    if(linkMode){
+      if(!linkSource){
+        if(canBeLinkSource(frame.type)) el.classList.add('linkable');
+      } else {
+        const source = getFrame(linkSource);
+        if(frame.id === linkSource){
+          el.classList.add('link-source');
+        } else if(source && isValidLink(source.type, frame.type)){
+          el.classList.add('linkable');
+        }
+      }
+    }
+
+    const pin = document.createElement('div');
+    pin.className = 'pin';
+    el.appendChild(pin);
+
+    const eyebrow = document.createElement('div');
+    eyebrow.className = 'eyebrow';
+    const label = document.createElement('span');
+    label.textContent = LABELS[frame.type];
+    eyebrow.appendChild(label);
+
+    const actions = document.createElement('span');
+    actions.className = 'actions';
+    if(canHavePhoto(frame.type)){
+      const cam = document.createElement('button');
+      cam.className = 'cam';
+      cam.textContent = '📷';
+      cam.title = frame.photo ? 'Remplacer la photo' : 'Ajouter une photo';
+      cam.onclick = (e) => { e.stopPropagation(); pendingPhotoFrameId = frame.id; photoInput.click(); };
+      cam.addEventListener('mousedown', (e) => e.stopPropagation());
+      actions.appendChild(cam);
+    }
+    const clock = document.createElement('button');
+    clock.className = 'cam';
+    clock.textContent = '🕒';
+    clock.title = 'Voir la date de création';
+    clock.onclick = (e) => {
+      e.stopPropagation();
+      if(dateVisibleIds.has(frame.id)) dateVisibleIds.delete(frame.id);
+      else dateVisibleIds.add(frame.id);
+      render();
+    };
+    clock.addEventListener('mousedown', (e) => e.stopPropagation());
+    actions.appendChild(clock);
+    const del = document.createElement('button');
+    del.className = 'del';
+    del.textContent = '✕';
+    del.title = 'Supprimer ce cadre';
+    del.onclick = (e) => { e.stopPropagation(); deleteFrame(frame.id); };
+    del.addEventListener('mousedown', (e) => e.stopPropagation());
+    actions.appendChild(del);
+    eyebrow.appendChild(actions);
+    el.appendChild(eyebrow);
+
+    if(dateVisibleIds.has(frame.id)){
+      const dateRow = document.createElement('div');
+      dateRow.className = 'date-row';
+      dateRow.textContent = 'Créé le ' + formatDate(frame.createdAt);
+      el.appendChild(dateRow);
+    }
+
+    const authorRow = document.createElement('div');
+    authorRow.className = 'author-row';
+    const prefix = document.createElement('span');
+    prefix.className = 'author-prefix';
+    prefix.textContent = AUTHOR_PREFIX[frame.type];
+    authorRow.appendChild(prefix);
+    const authorInput = document.createElement('input');
+    authorInput.type = 'text';
+    authorInput.className = 'author-input';
+    authorInput.placeholder = '…';
+    authorInput.value = frame.author || '';
+    authorInput.addEventListener('focus', () => { editingId = frame.id; });
+    authorInput.addEventListener('blur', () => { editingId = null; });
+    authorInput.addEventListener('input', (e) => { frame.author = e.target.value; saveBoardState(); });
+    authorInput.addEventListener('mousedown', (e) => e.stopPropagation());
+    authorRow.appendChild(authorInput);
+    el.appendChild(authorRow);
+
+    if(canHavePhoto(frame.type) && frame.photo){
+      const photoWrap = document.createElement('div');
+      photoWrap.className = 'photo-wrap';
+      const img = document.createElement('img');
+      img.src = frame.photo;
+      img.alt = 'Photo jointe';
+      img.title = 'Cliquer pour agrandir';
+      img.onclick = (e) => { e.stopPropagation(); openLightbox(frame); };
+      img.addEventListener('mousedown', (e) => e.stopPropagation());
+      photoWrap.appendChild(img);
+      const rm = document.createElement('button');
+      rm.className = 'photo-rm';
+      rm.textContent = '✕';
+      rm.title = 'Supprimer la photo';
+      rm.onclick = (e) => { e.stopPropagation(); frame.photo = null; render(); saveBoardState(); };
+      rm.addEventListener('mousedown', (e) => e.stopPropagation());
+      photoWrap.appendChild(rm);
+      el.appendChild(photoWrap);
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.placeholder = PLACEHOLDERS[frame.type];
+    textarea.value = frame.text;
+    textarea.addEventListener('focus', () => { editingId = frame.id; });
+    textarea.addEventListener('blur', () => { editingId = null; });
+    textarea.addEventListener('input', (e) => { frame.text = e.target.value; saveBoardState(); });
+    textarea.addEventListener('mousedown', (e) => e.stopPropagation());
+    el.appendChild(textarea);
+
+    el.addEventListener('mousedown', (e) => onCardMouseDown(e, frame));
+    el.addEventListener('click', (e) => onCardClick(e, frame));
+
+    canvas.appendChild(el);
+  });
+
+  drawLinks();
+}
+
+function drawLinks(){
+  linksSvg.innerHTML = `
+    <defs>
+      <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 Z" fill="var(--link)" />
+      </marker>
+      <marker id="arrow-crit" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 Z" fill="var(--link-crit)" />
+      </marker>
+    </defs>
+  `;
+  state.links.forEach(link => {
+    const from = getFrame(link.from);
+    const to = getFrame(link.to);
+    if(!from || !to) return;
+    const fromCenter = { x: from.x + CARD_W/2, y: from.y + CARD_H/2 };
+    const toCenter = { x: to.x + CARD_W/2, y: to.y + CARD_H/2 };
+    const p1 = anchorPoint(from, toCenter.x, toCenter.y);
+    const p2 = anchorPoint(to, fromCenter.x, fromCenter.y);
+    const isCrit = from.type === 'critique';
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', p1.x); line.setAttribute('y1', p1.y);
+    line.setAttribute('x2', p2.x); line.setAttribute('y2', p2.y);
+    line.setAttribute('stroke', isCrit ? 'var(--link-crit)' : 'var(--link)');
+    line.setAttribute('stroke-width', '2.5');
+    line.setAttribute('stroke-dasharray', '7,5');
+    line.setAttribute('marker-end', isCrit ? 'url(#arrow-crit)' : 'url(#arrow)');
+    linksSvg.appendChild(line);
+  });
+}
+
+function onCardClick(e, frame){
+  if(dragging && dragging.moved) return;
+  if(!linkMode) return;
+  if(!linkSource){
+    if(canBeLinkSource(frame.type)){ linkSource = frame.id; render(); updateHint(); }
+    return;
+  }
+  if(frame.id === linkSource){ linkSource = null; render(); updateHint(); return; }
+  const source = getFrame(linkSource);
+  if(source && isValidLink(source.type, frame.type)){
+    const exists = state.links.some(l => l.from === linkSource && l.to === frame.id);
+    if(!exists){
+      state.links.push({ id: frameUid(), from: linkSource, to: frame.id });
+      saveBoardState();
+    }
+    setLinkMode(false);
+    render();
+    updateHint();
+  }
+}
+
+function onCardMouseDown(e, frame){
+  if(linkMode) return;
+  if(e.target.tagName === 'TEXTAREA' || e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
+  e.stopPropagation();
+  const start = toCanvasCoords(e.clientX, e.clientY);
+  dragging = { id: frame.id, offsetX: start.x - frame.x, offsetY: start.y - frame.y, moved: false };
+  e.currentTarget.classList.add('dragging');
+}
+canvasWrap.addEventListener('mousemove', (e) => {
+  if(!dragging) return;
+  const frame = getFrame(dragging.id);
+  if(!frame) return;
+  const p = toCanvasCoords(e.clientX, e.clientY);
+  frame.x = Math.max(0, p.x - dragging.offsetX);
+  frame.y = Math.max(0, p.y - dragging.offsetY);
+  dragging.moved = true;
+  render();
+});
+window.addEventListener('mouseup', () => {
+  if(dragging){
+    canvas.querySelectorAll('.card.dragging').forEach(el => el.classList.remove('dragging'));
+    if(dragging.moved) saveBoardState();
+    dragging = null;
+  }
+});
+
+document.getElementById('addQ').onclick = () => addFrame('question');
+document.getElementById('addA').onclick = () => addFrame('answer');
+document.getElementById('addC').onclick = () => addFrame('critique');
+linkModeBtn.onclick = () => { setLinkMode(!linkMode); render(); updateHint(); };
+document.getElementById('resetAll').onclick = async () => {
+  if(!confirm('Effacer tous les cadres et liens de ce tableau pour tout le monde ?')) return;
+  state = { frames: [], links: [] };
+  render();
+  await saveBoardState();
+};
+
+document.addEventListener('keydown', (e) => {
+  if(e.key === 'Escape'){
+    if(lightbox.style.display === 'flex') closeLightbox();
+    if(linkSource){ linkSource = null; render(); updateHint(); }
+  }
+});
+
+document.getElementById('backHome').onclick = () => {
+  if(boardPollTimer){ clearInterval(boardPollTimer); boardPollTimer = null; }
+  if(backupTimer){ clearInterval(backupTimer); backupTimer = null; }
+  currentBoardId = null;
+  showScreen('screenHome');
+  loadBoardsIndex();
+};
+
+function openBoard(id, name){
+  currentBoardId = id;
+  boardStorageKey = `board:${id}`;
+  document.getElementById('boardTitle').innerHTML = `🖇️ ${name} <small>tableau collaboratif</small>`;
+  document.getElementById('resetAll').style.display = role === 'professeur' ? 'inline-block' : 'none';
+  document.getElementById('backupsBtn').style.display = role === 'professeur' ? 'inline-block' : 'none';
+  linkSource = null;
+  setLinkMode(false);
+  dateVisibleIds = new Set();
+  zoom = 1; applyZoom();
+  showScreen('screenBoard');
+  loadBoardState().then(() => takeBackup());
+  if(boardPollTimer) clearInterval(boardPollTimer);
+  boardPollTimer = setInterval(async () => {
+    if(dragging || editingId) return;
+    try{
+      const res = await storageAdapter.get(boardStorageKey, true);
+      if(res && res.value && res.value !== lastSavedJSON){
+        state = JSON.parse(res.value);
+        if(!state.frames) state.frames = [];
+        if(!state.links) state.links = [];
+        lastSavedJSON = res.value;
+        render();
+        setStatus('mis à jour');
+      }
+    }catch(e){ /* clé pas encore créée */ }
+  }, 2500);
+  if(backupTimer) clearInterval(backupTimer);
+  backupTimer = setInterval(() => takeBackup(), BACKUP_INTERVAL_MS);
+}
+</script>
+</body>
+</html>
