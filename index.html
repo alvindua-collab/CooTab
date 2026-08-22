@@ -557,7 +557,7 @@ const storageAdapter = {
       return;
     }
     try{
-      await firestoreSet('__tqr_diag__', String(Date.now()));
+      await firestoreSet('tqr_diag_ping', String(Date.now()));
       storageMode = 'firebase';
       banner.classList.add('info');
       banner.textContent = "🔥 Mode Firebase actif : ce tableau est synchronisé entre tous les appareils qui ouvrent cette page.";
