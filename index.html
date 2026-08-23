@@ -7,6 +7,9 @@
 <!-- SDK Firebase (mode "hors Claude", optionnel — ignoré si aucune config n'est renseignée plus bas) -->
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<!-- Export PDF d'un tableau -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{
     --board: #223229;
@@ -26,9 +29,10 @@
   }
   *{box-sizing:border-box;}
   html,body{height:100%;margin:0;background:var(--board);font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;}
+  body{display:flex; flex-direction:column;}
   a{color:inherit;}
 
-  .screen{height:100vh; display:none; flex-direction:column;}
+  .screen{flex:1; min-height:0; display:none; flex-direction:column;}
   .screen.visible{display:flex;}
 
   button{
@@ -294,9 +298,8 @@
 
   .storage-warning{
     display:none;
-    position:fixed;
-    top:0; left:0; right:0;
-    z-index:2000;
+    flex-shrink:0;
+    width:100%;
     background:#c96a5a;
     color:#2a1512;
     font-size:12.5px;
@@ -318,6 +321,11 @@
     max-width:90vw;
     max-height:75vh;
     overflow:auto;
+  }
+  .backup-card.wide{
+    width:900px;
+    max-width:95vw;
+    max-height:85vh;
   }
   .backup-card h2{color:var(--chalk); font-size:16px; margin:0 0 8px;}
   .backup-row{
@@ -370,6 +378,7 @@
     <h1>🖇️ Tableaux collaboratifs</h1>
     <span class="role-badge" id="homeRoleBadge">Élève</span>
     <span class="role-badge" id="homeClassBadge" style="display:none; background:var(--c-card);"></span>
+    <button class="btn-home" id="studentCahierBtn" style="display:none;">📒 Cahier jaune</button>
     <button class="btn-ghost" id="changeClassBtn" style="display:none;">Changer de classe</button>
     <button class="btn-ghost" id="logoutBtn">Se déconnecter</button>
   </div>
@@ -446,6 +455,7 @@
     <button class="btn-link" id="linkMode">🔗 Relier</button>
     <button class="btn-reset" id="resetAll" style="display:none;">Tout effacer</button>
     <button class="btn-home" id="backupsBtn" style="display:none;">💾 Sauvegardes</button>
+    <button class="btn-home" id="exportPdfBtn" style="display:none;">🖨️ Exporter en PDF</button>
     <div class="zoom-group">
       <button id="zoomOut" title="Dézoomer">−</button>
       <span class="zoom-readout" id="zoomReadout">100%</span>
@@ -655,6 +665,9 @@ function showScreen(id){
 
 /* ---------------- Écran de connexion ---------------- */
 document.getElementById('roleEleve').onclick = () => {
+  document.getElementById('teacherForm').classList.remove('visible');
+  document.getElementById('loginError').textContent = '';
+  document.getElementById('teacherPassword').value = '';
   document.getElementById('classGateForm').classList.add('visible');
   document.getElementById('classPassword').focus();
 };
@@ -683,6 +696,9 @@ async function submitClassPassword(){
 }
 
 document.getElementById('roleProf').onclick = () => {
+  document.getElementById('classGateForm').classList.remove('visible');
+  document.getElementById('classError').textContent = '';
+  document.getElementById('classPassword').value = '';
   document.getElementById('teacherForm').classList.add('visible');
   document.getElementById('teacherPassword').focus();
 };
@@ -722,13 +738,16 @@ function enterHome(){
 
   const classBadge = document.getElementById('homeClassBadge');
   const changeClassBtn = document.getElementById('changeClassBtn');
+  const studentCahierBtn = document.getElementById('studentCahierBtn');
   if(role === 'eleve'){
     classBadge.textContent = 'Classe : ' + currentClassName;
     classBadge.style.display = 'inline-block';
     changeClassBtn.style.display = 'inline-block';
+    studentCahierBtn.style.display = 'inline-block';
   } else {
     classBadge.style.display = 'none';
     changeClassBtn.style.display = 'none';
+    studentCahierBtn.style.display = 'none';
   }
 
   if(role === 'professeur'){
@@ -743,6 +762,10 @@ document.getElementById('changeClassBtn').onclick = () => {
   role = null;
   showScreen('screenLogin');
   document.getElementById('roleEleve').click();
+};
+
+document.getElementById('studentCahierBtn').onclick = () => {
+  if(currentClassId) openCahier(currentClassId);
 };
 
 document.getElementById('logoutBtn').onclick = () => {
@@ -872,6 +895,7 @@ let cahierClassId = null;
 let cahierQuestions = [];
 let cahierView = 'menu'; // 'menu' | 'submit' | 'choose-menu' | 'list' | 'random'
 let cahierRandomQuestion = null;
+let cahierShownQuestion = null;
 let cahierAnswerRevealed = false;
 let revealedAnswers = new Set();
 
@@ -938,12 +962,15 @@ function renderCahier(){
     return;
   }
 
+  document.querySelector('#cahierModal .backup-card').classList.toggle('wide', cahierView === 'random' || cahierView === 'show');
+
   const back = document.createElement('button');
   back.className = 'btn-ghost';
   back.textContent = '← Retour';
   back.style.marginBottom = '14px';
   back.onclick = () => {
-    cahierView = (cahierView === 'list' || cahierView === 'random') ? 'choose-menu' : 'menu';
+    if(cahierView === 'show') cahierView = 'list';
+    else cahierView = (cahierView === 'list' || cahierView === 'random') ? 'choose-menu' : 'menu';
     renderCahier();
   };
   body.appendChild(back);
@@ -978,7 +1005,7 @@ function renderCahier(){
       const text = qTextarea.value.trim();
       const answer = aTextarea.value.trim();
       if(!text) return;
-      cahierQuestions.push({ id: questionUid(), text, answer, askedAt: null, createdAt: Date.now() });
+      cahierQuestions.push({ id: questionUid(), text, answer, askedAt: null, createdAt: Date.now(), isStudent: role === 'eleve' });
       await saveCahierQuestions();
       cahierView = 'menu';
       renderCahier();
@@ -1012,17 +1039,19 @@ function renderCahier(){
       return;
     }
 
-    const resetBtn = document.createElement('button');
-    resetBtn.className = 'btn-ghost';
-    resetBtn.textContent = 'Remettre toutes les questions dans le tirage';
-    resetBtn.style.marginBottom = '10px';
-    resetBtn.onclick = async () => {
-      if(!confirm('Marquer toutes les questions de cette classe comme non posées ?')) return;
-      cahierQuestions.forEach(q => q.askedAt = null);
-      await saveCahierQuestions();
-      renderCahier();
-    };
-    body.appendChild(resetBtn);
+    if(role === 'professeur'){
+      const resetBtn = document.createElement('button');
+      resetBtn.className = 'btn-ghost';
+      resetBtn.textContent = 'Remettre toutes les questions dans le tirage';
+      resetBtn.style.marginBottom = '10px';
+      resetBtn.onclick = async () => {
+        if(!confirm('Marquer toutes les questions de cette classe comme non posées ?')) return;
+        cahierQuestions.forEach(q => q.askedAt = null);
+        await saveCahierQuestions();
+        renderCahier();
+      };
+      body.appendChild(resetBtn);
+    }
 
     cahierQuestions.slice().sort((a,b) => (a.askedAt ? 1 : 0) - (b.askedAt ? 1 : 0)).forEach(q => {
       const row = document.createElement('div');
@@ -1031,131 +1060,177 @@ function renderCahier(){
       const info = document.createElement('div');
       info.className = 'grow';
       const text = document.createElement('div');
-      text.textContent = q.text;
+      text.textContent = q.text + (q.isStudent ? '  ' : '');
+      if(q.isStudent){
+        const badge = document.createElement('span');
+        badge.textContent = 'question élève';
+        badge.style.cssText = 'display:inline-block; margin-left:6px; background:var(--c-card); color:#1e1230; font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.4px; border-radius:10px; padding:2px 8px; vertical-align:middle;';
+        text.appendChild(badge);
+      }
       const meta = document.createElement('div');
       meta.style.cssText = 'font-size:11px; color:var(--chalk-dim); margin-top:3px;';
       meta.textContent = 'Créée le ' + formatDate(q.createdAt) + ' — ' + (q.askedAt ? ('posée le ' + formatDate(q.askedAt)) : 'pas encore posée');
       info.appendChild(text); info.appendChild(meta);
       row.appendChild(info);
 
-      const label = document.createElement('label');
-      label.style.cssText = 'display:flex; align-items:center; gap:6px; color:var(--chalk); font-size:12px; white-space:nowrap;';
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = !!q.askedAt;
-      checkbox.onchange = async () => {
-        q.askedAt = checkbox.checked ? Date.now() : null;
-        await saveCahierQuestions();
-        renderCahier();
-      };
-      label.appendChild(checkbox);
-      label.appendChild(document.createTextNode('Posée'));
-      row.appendChild(label);
-
-      const delBtn = document.createElement('button');
-      delBtn.className = 'btn-reset';
-      delBtn.textContent = '✕';
-      delBtn.title = 'Supprimer cette question';
-      delBtn.onclick = async () => {
-        cahierQuestions = cahierQuestions.filter(x => x.id !== q.id);
-        await saveCahierQuestions();
-        renderCahier();
-      };
-      row.appendChild(delBtn);
-
-      body.appendChild(row);
-
-      if(q.answer){
-        const answerBlock = document.createElement('div');
-        answerBlock.style.cssText = 'margin: -2px 0 10px 4px;';
-        const isRevealed = revealedAnswers.has(q.id);
-        const toggleBtn = document.createElement('button');
-        toggleBtn.className = 'btn-ghost';
-        toggleBtn.style.cssText = 'font-size:11px; padding:4px 9px;';
-        toggleBtn.textContent = isRevealed ? '🙈 Masquer la réponse' : '👁️ Voir la réponse';
-        toggleBtn.onclick = () => {
-          if(revealedAnswers.has(q.id)) revealedAnswers.delete(q.id);
-          else revealedAnswers.add(q.id);
+      if(role === 'professeur'){
+        const label = document.createElement('label');
+        label.style.cssText = 'display:flex; align-items:center; gap:6px; color:var(--chalk); font-size:12px; white-space:nowrap;';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = !!q.askedAt;
+        checkbox.onchange = async () => {
+          q.askedAt = checkbox.checked ? Date.now() : null;
+          await saveCahierQuestions();
           renderCahier();
         };
-        answerBlock.appendChild(toggleBtn);
-        if(isRevealed){
-          const answerText = document.createElement('div');
-          answerText.style.cssText = 'margin-top:6px; color:var(--chalk-dim); font-style:italic; font-size:12.5px;';
-          answerText.textContent = 'Réponse : ' + q.answer;
-          answerBlock.appendChild(answerText);
-        }
-        body.appendChild(answerBlock);
+        label.appendChild(checkbox);
+        label.appendChild(document.createTextNode('Posée'));
+        row.appendChild(label);
       }
+
+      const showBtn = document.createElement('button');
+      showBtn.className = 'btn-primary';
+      showBtn.textContent = '🖥️ Afficher';
+      showBtn.title = 'Afficher en grand, comme le tirage au hasard';
+      showBtn.onclick = () => {
+        cahierShownQuestion = q;
+        cahierAnswerRevealed = false;
+        cahierView = 'show';
+        renderCahier();
+      };
+      row.appendChild(showBtn);
+
+      if(role === 'professeur'){
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn-reset';
+        delBtn.textContent = '✕';
+        delBtn.title = 'Supprimer cette question';
+        delBtn.onclick = async () => {
+          cahierQuestions = cahierQuestions.filter(x => x.id !== q.id);
+          await saveCahierQuestions();
+          renderCahier();
+        };
+        row.appendChild(delBtn);
+      }
+
+      body.appendChild(row);
     });
     return;
   }
 
-  if(cahierView === 'random'){
-    const pool = cahierQuestions.filter(q => !q.askedAt);
-    if(!cahierRandomQuestion && pool.length){
-      cahierRandomQuestion = pool[Math.floor(Math.random() * pool.length)];
+  if(cahierView === 'random' || cahierView === 'show'){
+    let question;
+    let pool = [];
+
+    if(cahierView === 'random'){
+      pool = cahierQuestions.filter(q => !q.askedAt);
+      if(!cahierRandomQuestion && pool.length){
+        cahierRandomQuestion = pool[Math.floor(Math.random() * pool.length)];
+      }
+      if(!cahierRandomQuestion){
+        const p = document.createElement('p');
+        p.className = 'backup-empty';
+        p.textContent = "Toutes les questions ont déjà été posées ! Passez par la liste pour en réinitialiser si besoin.";
+        body.appendChild(p);
+        return;
+      }
+      question = cahierRandomQuestion;
+    } else {
+      question = cahierShownQuestion;
+      if(!question){
+        cahierView = 'list';
+        renderCahier();
+        return;
+      }
     }
-    if(!cahierRandomQuestion){
-      const p = document.createElement('p');
-      p.className = 'backup-empty';
-      p.textContent = "Toutes les questions ont déjà été posées ! Passez par la liste pour en réinitialiser si besoin.";
-      body.appendChild(p);
-      return;
-    }
 
-    const card = document.createElement('div');
-    card.style.cssText = 'background:rgba(245,241,230,0.08); border-radius:10px; padding:22px; margin-bottom:6px; font-size:16px; color:var(--chalk); text-align:center; line-height:1.5;';
-    card.textContent = cahierRandomQuestion.text;
-    body.appendChild(card);
+    renderBigQuestionDisplay(body, question);
 
-    const createdNote = document.createElement('p');
-    createdNote.style.cssText = 'text-align:center; color:var(--chalk-dim); font-size:11px; margin:0 0 12px;';
-    createdNote.textContent = 'Créée le ' + formatDate(cahierRandomQuestion.createdAt);
-    body.appendChild(createdNote);
+    if(cahierView === 'random'){
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; gap:12px; justify-content:center; flex-wrap:wrap; align-items:center; margin-top:14px;';
 
-    if(cahierRandomQuestion.answer){
-      const answerRow = document.createElement('div');
-      answerRow.style.cssText = 'text-align:center; margin-bottom:14px;';
-      const revealBtn = document.createElement('button');
-      revealBtn.className = 'btn-ghost';
-      revealBtn.textContent = cahierAnswerRevealed ? '🙈 Masquer la réponse' : '👁️ Voir la réponse';
-      revealBtn.onclick = () => {
-        cahierAnswerRevealed = !cahierAnswerRevealed;
+      const reroll = document.createElement('button');
+      reroll.className = 'btn-ghost';
+      reroll.textContent = '🎲 Tirer une autre';
+      reroll.disabled = pool.filter(q => q.id !== cahierRandomQuestion.id).length === 0;
+      reroll.onclick = () => {
+        const otherPool = pool.filter(q => q.id !== cahierRandomQuestion.id);
+        if(otherPool.length) cahierRandomQuestion = otherPool[Math.floor(Math.random() * otherPool.length)];
+        cahierAnswerRevealed = false;
         renderCahier();
       };
-      answerRow.appendChild(revealBtn);
-      if(cahierAnswerRevealed){
-        const answerText = document.createElement('div');
-        answerText.style.cssText = 'margin-top:10px; color:var(--chalk-dim); font-style:italic; font-size:14px;';
-        answerText.textContent = 'Réponse : ' + cahierRandomQuestion.answer;
-        answerRow.appendChild(answerText);
-      }
-      body.appendChild(answerRow);
+      row.appendChild(reroll);
+      body.appendChild(row);
     }
+    return;
+  }
+}
 
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex; gap:12px; justify-content:center; flex-wrap:wrap; align-items:center;';
+/* Affichage en grand format (question + réponse + statut), utilisé à la fois
+   par le tirage au hasard et par le choix manuel dans la liste — pensé pour
+   être lisible depuis le fond d'une salle de classe une fois projeté. */
+function renderBigQuestionDisplay(body, question){
+  const card = document.createElement('div');
+  card.style.cssText = 'background:rgba(245,241,230,0.08); border-radius:16px; padding:48px 36px; margin-bottom:8px; font-size:32px; font-weight:600; color:var(--chalk); text-align:center; line-height:1.4;';
+  card.textContent = question.text;
+  body.appendChild(card);
 
-    const reroll = document.createElement('button');
-    reroll.className = 'btn-ghost';
-    reroll.textContent = '🎲 Tirer une autre';
-    reroll.disabled = pool.filter(q => q.id !== cahierRandomQuestion.id).length === 0;
-    reroll.onclick = () => {
-      const otherPool = pool.filter(q => q.id !== cahierRandomQuestion.id);
-      if(otherPool.length) cahierRandomQuestion = otherPool[Math.floor(Math.random() * otherPool.length)];
-      cahierAnswerRevealed = false;
+  if(question.isStudent){
+    const badgeRow = document.createElement('div');
+    badgeRow.style.cssText = 'text-align:center; margin-bottom:6px;';
+    const badge = document.createElement('span');
+    badge.textContent = 'question élève';
+    badge.style.cssText = 'display:inline-block; background:var(--c-card); color:#1e1230; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; border-radius:12px; padding:3px 12px;';
+    badgeRow.appendChild(badge);
+    body.appendChild(badgeRow);
+  }
+
+  const createdNote = document.createElement('p');
+  createdNote.style.cssText = 'text-align:center; color:var(--chalk-dim); font-size:13px; margin:0 0 20px;';
+  createdNote.textContent = 'Créée le ' + formatDate(question.createdAt);
+  body.appendChild(createdNote);
+
+  // Un élève ne peut voir la réponse que si la question a déjà été posée par le professeur.
+  const canSeeAnswer = role === 'professeur' || !!question.askedAt;
+  if(question.answer && canSeeAnswer){
+    const answerRow = document.createElement('div');
+    answerRow.style.cssText = 'text-align:center; margin-bottom:20px;';
+    const revealBtn = document.createElement('button');
+    revealBtn.className = 'btn-ghost';
+    revealBtn.style.cssText = 'font-size:15px; padding:11px 20px;';
+    revealBtn.textContent = cahierAnswerRevealed ? '🙈 Masquer la réponse' : '👁️ Voir la réponse';
+    revealBtn.onclick = () => {
+      cahierAnswerRevealed = !cahierAnswerRevealed;
       renderCahier();
     };
-    row.appendChild(reroll);
+    answerRow.appendChild(revealBtn);
+    if(cahierAnswerRevealed){
+      const answerText = document.createElement('div');
+      answerText.style.cssText = 'margin-top:18px; background:rgba(242,200,121,0.12); border-radius:12px; padding:24px; color:var(--link); font-weight:600; font-size:26px; line-height:1.4;';
+      answerText.textContent = question.answer;
+      answerRow.appendChild(answerText);
+    }
+    body.appendChild(answerRow);
+  } else if(question.answer && !canSeeAnswer){
+    const note = document.createElement('p');
+    note.style.cssText = 'text-align:center; color:var(--chalk-dim); font-size:12.5px; font-style:italic; margin-bottom:20px;';
+    note.textContent = "La réponse sera visible une fois que cette question aura été posée.";
+    body.appendChild(note);
+  }
 
+  const checkRow = document.createElement('div');
+  checkRow.style.cssText = 'text-align:center;';
+
+  if(role === 'professeur'){
     const label = document.createElement('label');
-    label.style.cssText = 'display:flex; align-items:center; gap:6px; color:var(--chalk); font-size:13px;';
+    label.style.cssText = 'display:inline-flex; align-items:center; gap:8px; color:var(--chalk); font-size:14px;';
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
-    checkbox.checked = !!cahierRandomQuestion.askedAt;
+    checkbox.checked = !!question.askedAt;
     checkbox.onchange = async () => {
-      const q = cahierQuestions.find(x => x.id === cahierRandomQuestion.id);
+      const q = cahierQuestions.find(x => x.id === question.id);
       if(q){
         q.askedAt = checkbox.checked ? Date.now() : null;
         await saveCahierQuestions();
@@ -1164,15 +1239,20 @@ function renderCahier(){
     };
     label.appendChild(checkbox);
     label.appendChild(document.createTextNode(
-      cahierRandomQuestion.askedAt
-        ? ('Question posée le ' + formatDate(cahierRandomQuestion.askedAt))
-        : 'Cette question a été posée aujourd\'hui'
+      question.askedAt
+        ? ('Question posée le ' + formatDate(question.askedAt))
+        : "Cette question a été posée aujourd'hui"
     ));
-    row.appendChild(label);
-
-    body.appendChild(row);
-    return;
+    checkRow.appendChild(label);
+  } else {
+    const statusText = document.createElement('span');
+    statusText.style.cssText = 'color:var(--chalk-dim); font-size:13px;';
+    statusText.textContent = question.askedAt
+      ? ('Posée le ' + formatDate(question.askedAt))
+      : "Pas encore posée par le professeur";
+    checkRow.appendChild(statusText);
   }
+  body.appendChild(checkRow);
 }
 
 /* ---------------- Gestion des tableaux (accueil) ---------------- */
@@ -1894,6 +1974,125 @@ document.getElementById('resetAll').onclick = async () => {
   await saveBoardState();
 };
 
+/* ---------------- Export du tableau en PDF ---------------- */
+async function exportBoardToPdf(){
+  if(!state.frames.length){
+    alert('Ce tableau est vide, rien à exporter.');
+    return;
+  }
+  const btn = document.getElementById('exportPdfBtn');
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Génération…';
+
+  // Repli propre : on referme le mode liaison et on repasse à 100% de zoom
+  // le temps de la capture, pour un rendu net et complet.
+  setLinkMode(false);
+  const savedZoom = zoom;
+  const savedScrollLeft = canvasWrap.scrollLeft;
+  const savedScrollTop = canvasWrap.scrollTop;
+  zoom = 1;
+  applyZoom();
+  render();
+
+  try{
+    // Zone occupée par les cadres, avec une marge, pour ne pas capturer
+    // tout le très grand canevas vide autour.
+    const margin = 50;
+    const minX = Math.max(0, Math.min(...state.frames.map(f => f.x)) - margin);
+    const minY = Math.max(0, Math.min(...state.frames.map(f => f.y)) - margin);
+    const maxX = Math.max(...state.frames.map(f => f.x + CARD_W)) + margin;
+    const maxY = Math.max(...state.frames.map(f => f.y + CARD_H)) + margin;
+
+    const captureScale = 2; // résolution de capture (px image = px CSS × captureScale)
+    const snapshotCanvas = await html2canvas(canvas, {
+      x: minX, y: minY,
+      width: maxX - minX, height: maxY - minY,
+      backgroundColor: '#223229',
+      scale: captureScale,
+      useCORS: true
+    });
+
+    const boardEntry = boardsIndex.find(b => b.id === currentBoardId);
+    const boardName = boardEntry ? boardEntry.name : 'Tableau';
+    const classLabel = boardEntry ? className(boardEntry.classId) : '';
+    const subtitle = (classLabel ? ('Classe : ' + classLabel + '  —  ') : '') + 'Exporté le ' + formatDate(Date.now());
+
+    // Échelle physique fixe : un cadre imprimé fait toujours TARGET_CARD_WIDTH_MM
+    // de large, quel que soit le nombre de cadres — c'est donc le nombre de pages
+    // qui s'adapte à la taille du tableau, jamais l'inverse.
+    const TARGET_CARD_WIDTH_MM = 70;
+    const devicePxPerMm = (captureScale * CARD_W) / TARGET_CARD_WIDTH_MM;
+
+    const PAGE_W = 297, PAGE_H = 210, PAGE_MARGIN = 10, HEADER_H = 12;
+    const contentWidthMm = PAGE_W - PAGE_MARGIN * 2;
+    const contentHeightMm = PAGE_H - PAGE_MARGIN * 2 - HEADER_H;
+    const tileWidthPx = Math.round(contentWidthMm * devicePxPerMm);
+    const tileHeightPx = Math.round(contentHeightMm * devicePxPerMm);
+
+    const cols = Math.ceil(snapshotCanvas.width / tileWidthPx);
+    const rows = Math.ceil(snapshotCanvas.height / tileHeightPx);
+    const totalPages = cols * rows;
+
+    if(totalPages > 60){
+      const proceed = confirm(
+        `Avec un cadre imprimé à ${TARGET_CARD_WIDTH_MM} mm de large, ce tableau nécessitera environ ${totalPages} pages ` +
+        `(${cols} colonnes × ${rows} lignes). Continuer quand même ?`
+      );
+      if(!proceed) return;
+    }
+
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [PAGE_W, PAGE_H] });
+
+    let pageIndex = 0;
+    for(let r = 0; r < rows; r++){
+      for(let c = 0; c < cols; c++){
+        const sx = c * tileWidthPx;
+        const sy = r * tileHeightPx;
+        const sw = Math.min(tileWidthPx, snapshotCanvas.width - sx);
+        const sh = Math.min(tileHeightPx, snapshotCanvas.height - sy);
+
+        const tileCanvas = document.createElement('canvas');
+        tileCanvas.width = sw;
+        tileCanvas.height = sh;
+        tileCanvas.getContext('2d').drawImage(snapshotCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+        const tileDataUrl = tileCanvas.toDataURL('image/png');
+
+        const tileWidthMm = sw / devicePxPerMm;
+        const tileHeightMm = sh / devicePxPerMm;
+
+        if(pageIndex > 0) pdf.addPage([PAGE_W, PAGE_H], 'landscape');
+        pageIndex++;
+
+        pdf.setFontSize(11);
+        pdf.setTextColor(30, 30, 30);
+        pdf.text(`${boardName} — page ${pageIndex}/${totalPages} (ligne ${r + 1}, colonne ${c + 1})`, PAGE_MARGIN, PAGE_MARGIN + 4);
+        pdf.setFontSize(8);
+        pdf.setTextColor(110, 110, 110);
+        pdf.text(subtitle, PAGE_MARGIN, PAGE_MARGIN + 9);
+
+        pdf.addImage(tileDataUrl, 'PNG', PAGE_MARGIN, PAGE_MARGIN + HEADER_H, tileWidthMm, tileHeightMm);
+      }
+    }
+
+    const fileSafeName = boardName.replace(/[^\p{L}\p{N}\- ]+/gu, '').trim().replace(/\s+/g, '_') || 'tableau';
+    pdf.save(fileSafeName + '.pdf');
+  }catch(e){
+    console.error('Erreur lors de la génération du PDF', e);
+    alert("Impossible de générer le PDF pour l'instant. Vérifiez la connexion (les bibliothèques PDF doivent pouvoir se charger) et réessayez.");
+  } finally {
+    zoom = savedZoom;
+    applyZoom();
+    render();
+    canvasWrap.scrollLeft = savedScrollLeft;
+    canvasWrap.scrollTop = savedScrollTop;
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+document.getElementById('exportPdfBtn').onclick = exportBoardToPdf;
+
 document.addEventListener('keydown', (e) => {
   if(e.key === 'Escape'){
     if(lightbox.style.display === 'flex') closeLightbox();
@@ -1915,6 +2114,7 @@ function openBoard(id, name){
   document.getElementById('boardTitle').innerHTML = `🖇️ ${name} <small>tableau collaboratif</small>`;
   document.getElementById('resetAll').style.display = role === 'professeur' ? 'inline-block' : 'none';
   document.getElementById('backupsBtn').style.display = role === 'professeur' ? 'inline-block' : 'none';
+  document.getElementById('exportPdfBtn').style.display = role === 'professeur' ? 'inline-block' : 'none';
   linkSource = null;
   setLinkMode(false);
   dateVisibleIds = new Set();
