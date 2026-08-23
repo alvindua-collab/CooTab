@@ -425,6 +425,14 @@
       </div>
     </div>
   </div>
+
+  <div class="lightbox" id="cahierModal">
+    <button class="lightbox-close" id="cahierClose">✕</button>
+    <div class="backup-card">
+      <h2 id="cahierTitle">📒 Cahier jaune</h2>
+      <div id="cahierBody"></div>
+    </div>
+  </div>
 </div>
 
 <!-- ===================== ÉCRAN DU TABLEAU ===================== -->
@@ -785,6 +793,12 @@ function renderClassList(){
     info.appendChild(name); info.appendChild(meta);
     row.appendChild(info);
 
+    const cahierBtn = document.createElement('button');
+    cahierBtn.className = 'btn-home';
+    cahierBtn.textContent = '📒 Cahier jaune';
+    cahierBtn.onclick = () => openCahier(cls.id);
+    row.appendChild(cahierBtn);
+
     const delBtn = document.createElement('button');
     delBtn.className = 'btn-reset';
     delBtn.textContent = 'Supprimer';
@@ -829,6 +843,7 @@ async function deleteClass(id){
     try{ await storageAdapter.delete(`board-backup:${b.id}`, true); }catch(e){ /* déjà absent */ }
   }
   boardsIndex = boardsIndex.filter(b => b.classId !== id);
+  try{ await storageAdapter.delete(`class-questions:${id}`, true); }catch(e){ /* déjà absent */ }
   await saveClassesIndex();
   await saveBoardsIndex();
   renderClassList();
@@ -850,6 +865,242 @@ function renderBoardClassOptions(){
   const hasClasses = classesIndex.length > 0;
   createRow.style.display = hasClasses ? 'flex' : 'none';
   noClassNote.style.display = hasClasses ? 'none' : 'block';
+}
+
+/* ---------------- Cahier jaune (banque de questions par classe) ---------------- */
+let cahierClassId = null;
+let cahierQuestions = [];
+let cahierView = 'menu'; // 'menu' | 'submit' | 'choose-menu' | 'list' | 'random'
+let cahierRandomQuestion = null;
+
+function cahierKey(classId){ return `class-questions:${classId}`; }
+function questionUid(){ return 'q' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+
+async function openCahier(classId){
+  cahierClassId = classId;
+  cahierView = 'menu';
+  cahierRandomQuestion = null;
+  document.getElementById('cahierModal').style.display = 'flex';
+  await loadCahierQuestions();
+  renderCahier();
+}
+document.getElementById('cahierClose').onclick = () => {
+  document.getElementById('cahierModal').style.display = 'none';
+};
+document.getElementById('cahierModal').addEventListener('click', (e) => {
+  if(e.target.id === 'cahierModal') document.getElementById('cahierModal').style.display = 'none';
+});
+
+async function loadCahierQuestions(){
+  try{
+    const res = await storageAdapter.get(cahierKey(cahierClassId), true);
+    cahierQuestions = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){
+    cahierQuestions = [];
+  }
+}
+async function saveCahierQuestions(){
+  try{ await storageAdapter.set(cahierKey(cahierClassId), JSON.stringify(cahierQuestions), true); }
+  catch(e){ console.error('Erreur de sauvegarde du cahier jaune', e); }
+}
+
+function renderCahier(){
+  document.getElementById('cahierTitle').textContent = '📒 Cahier jaune — ' + className(cahierClassId);
+  const body = document.getElementById('cahierBody');
+  body.innerHTML = '';
+
+  if(cahierView === 'menu'){
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;';
+    const btnSubmit = document.createElement('button');
+    btnSubmit.className = 'btn-primary';
+    btnSubmit.textContent = '✍️ Soumettre une question';
+    btnSubmit.onclick = () => { cahierView = 'submit'; renderCahier(); };
+    const btnChoose = document.createElement('button');
+    btnChoose.className = 'btn-primary';
+    btnChoose.textContent = '🎯 Choisir une question';
+    btnChoose.onclick = () => { cahierView = 'choose-menu'; renderCahier(); };
+    row.appendChild(btnSubmit); row.appendChild(btnChoose);
+    body.appendChild(row);
+
+    const total = cahierQuestions.length;
+    const asked = cahierQuestions.filter(q => q.askedAt).length;
+    const stats = document.createElement('p');
+    stats.className = 'share-note';
+    stats.textContent = total
+      ? `${total} question(s) enregistrée(s) pour cette classe, dont ${asked} déjà posée(s).`
+      : "Aucune question enregistrée pour cette classe pour l'instant.";
+    body.appendChild(stats);
+    return;
+  }
+
+  const back = document.createElement('button');
+  back.className = 'btn-ghost';
+  back.textContent = '← Retour';
+  back.style.marginBottom = '14px';
+  back.onclick = () => {
+    cahierView = (cahierView === 'list' || cahierView === 'random') ? 'choose-menu' : 'menu';
+    renderCahier();
+  };
+  body.appendChild(back);
+
+  if(cahierView === 'submit'){
+    const label = document.createElement('label');
+    label.textContent = 'Une question par ligne :';
+    label.style.cssText = 'color:var(--chalk-dim); font-size:12px; display:block; margin-bottom:6px;';
+    body.appendChild(label);
+
+    const textarea = document.createElement('textarea');
+    textarea.rows = 6;
+    textarea.placeholder = 'Quelle est la capitale de la France ?\nPourquoi le ciel est-il bleu ?';
+    textarea.style.cssText = 'width:100%; border-radius:8px; border:1px solid rgba(245,241,230,0.25); background:rgba(0,0,0,0.25); color:var(--chalk); padding:10px; font-family:inherit; font-size:13px; margin-bottom:10px;';
+    body.appendChild(textarea);
+
+    const addBtn = document.createElement('button');
+    addBtn.className = 'btn-primary';
+    addBtn.textContent = '+ Ajouter';
+    addBtn.onclick = async () => {
+      const lines = textarea.value.split('\n').map(l => l.trim()).filter(Boolean);
+      if(!lines.length) return;
+      lines.forEach(text => cahierQuestions.push({ id: questionUid(), text, askedAt: null }));
+      await saveCahierQuestions();
+      textarea.value = '';
+      renderCahier();
+    };
+    body.appendChild(addBtn);
+    return;
+  }
+
+  if(cahierView === 'choose-menu'){
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; gap:10px; flex-wrap:wrap;';
+    const btnList = document.createElement('button');
+    btnList.className = 'btn-primary';
+    btnList.textContent = '📋 Voir la liste des questions';
+    btnList.onclick = () => { cahierView = 'list'; renderCahier(); };
+    const btnRandom = document.createElement('button');
+    btnRandom.className = 'btn-primary';
+    btnRandom.textContent = '🎲 Choisir une question au hasard';
+    btnRandom.onclick = () => { cahierRandomQuestion = null; cahierView = 'random'; renderCahier(); };
+    row.appendChild(btnList); row.appendChild(btnRandom);
+    body.appendChild(row);
+    return;
+  }
+
+  if(cahierView === 'list'){
+    if(!cahierQuestions.length){
+      const p = document.createElement('p');
+      p.className = 'backup-empty';
+      p.textContent = 'Aucune question enregistrée.';
+      body.appendChild(p);
+      return;
+    }
+
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'btn-ghost';
+    resetBtn.textContent = 'Remettre toutes les questions dans le tirage';
+    resetBtn.style.marginBottom = '10px';
+    resetBtn.onclick = async () => {
+      if(!confirm('Marquer toutes les questions de cette classe comme non posées ?')) return;
+      cahierQuestions.forEach(q => q.askedAt = null);
+      await saveCahierQuestions();
+      renderCahier();
+    };
+    body.appendChild(resetBtn);
+
+    cahierQuestions.slice().sort((a,b) => (a.askedAt ? 1 : 0) - (b.askedAt ? 1 : 0)).forEach(q => {
+      const row = document.createElement('div');
+      row.className = 'backup-row';
+
+      const info = document.createElement('div');
+      info.className = 'grow';
+      const text = document.createElement('div');
+      text.textContent = q.text;
+      const meta = document.createElement('div');
+      meta.style.cssText = 'font-size:11px; color:var(--chalk-dim); margin-top:3px;';
+      meta.textContent = q.askedAt ? ('Posée le ' + formatDate(q.askedAt)) : 'Pas encore posée';
+      info.appendChild(text); info.appendChild(meta);
+      row.appendChild(info);
+
+      const label = document.createElement('label');
+      label.style.cssText = 'display:flex; align-items:center; gap:6px; color:var(--chalk); font-size:12px; white-space:nowrap;';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = !!q.askedAt;
+      checkbox.onchange = async () => {
+        q.askedAt = checkbox.checked ? Date.now() : null;
+        await saveCahierQuestions();
+        renderCahier();
+      };
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode('Posée'));
+      row.appendChild(label);
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn-reset';
+      delBtn.textContent = '✕';
+      delBtn.title = 'Supprimer cette question';
+      delBtn.onclick = async () => {
+        cahierQuestions = cahierQuestions.filter(x => x.id !== q.id);
+        await saveCahierQuestions();
+        renderCahier();
+      };
+      row.appendChild(delBtn);
+
+      body.appendChild(row);
+    });
+    return;
+  }
+
+  if(cahierView === 'random'){
+    const pool = cahierQuestions.filter(q => !q.askedAt);
+    if(!cahierRandomQuestion && pool.length){
+      cahierRandomQuestion = pool[Math.floor(Math.random() * pool.length)];
+    }
+    if(!pool.length){
+      const p = document.createElement('p');
+      p.className = 'backup-empty';
+      p.textContent = "Toutes les questions ont déjà été posées ! Passez par la liste pour en réinitialiser si besoin.";
+      body.appendChild(p);
+      return;
+    }
+
+    const card = document.createElement('div');
+    card.style.cssText = 'background:rgba(245,241,230,0.08); border-radius:10px; padding:22px; margin-bottom:14px; font-size:16px; color:var(--chalk); text-align:center; line-height:1.5;';
+    card.textContent = cahierRandomQuestion.text;
+    body.appendChild(card);
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; gap:12px; justify-content:center; flex-wrap:wrap; align-items:center;';
+
+    const reroll = document.createElement('button');
+    reroll.className = 'btn-ghost';
+    reroll.textContent = '🎲 Tirer une autre';
+    reroll.onclick = () => {
+      const otherPool = pool.filter(q => q.id !== cahierRandomQuestion.id);
+      if(otherPool.length) cahierRandomQuestion = otherPool[Math.floor(Math.random() * otherPool.length)];
+      renderCahier();
+    };
+    row.appendChild(reroll);
+
+    const label = document.createElement('label');
+    label.style.cssText = 'display:flex; align-items:center; gap:6px; color:var(--chalk); font-size:13px;';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.onchange = async () => {
+      if(checkbox.checked){
+        const q = cahierQuestions.find(x => x.id === cahierRandomQuestion.id);
+        if(q){ q.askedAt = Date.now(); await saveCahierQuestions(); }
+        renderCahier();
+      }
+    };
+    label.appendChild(checkbox);
+    label.appendChild(document.createTextNode('Cette question a été posée le ' + formatDate(Date.now())));
+    row.appendChild(label);
+
+    body.appendChild(row);
+    return;
+  }
 }
 
 /* ---------------- Gestion des tableaux (accueil) ---------------- */
