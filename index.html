@@ -125,6 +125,17 @@
     border:1px solid rgba(245,241,230,0.25);
     background:rgba(0,0,0,0.25); color:var(--chalk); font-size:14px;
   }
+  .create-row select{
+    padding:9px 10px; border-radius:7px;
+    border:1px solid rgba(245,241,230,0.25);
+    background:rgba(0,0,0,0.25); color:var(--chalk); font-size:14px;
+    max-width:220px;
+  }
+  .class-group-title{
+    color:var(--chalk-dim); font-size:11px; text-transform:uppercase;
+    letter-spacing:0.6px; margin:14px 0 6px; font-weight:700;
+  }
+  .class-group-title:first-child{margin-top:0;}
 
   .share-grid{display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start;}
   .share-qr{
@@ -341,6 +352,15 @@
       </div>
       <div class="login-error" id="loginError"></div>
     </div>
+    <div class="teacher-form" id="classGateForm">
+      <label for="classPassword">Nom de la classe (donné par votre professeur)</label>
+      <input type="text" id="classPassword" placeholder="ex. 4B-Histoire">
+      <div class="row">
+        <button class="btn-primary" id="classSubmit">Rejoindre</button>
+        <button class="btn-ghost" id="classCancel">Annuler</button>
+      </div>
+      <div class="login-error" id="classError"></div>
+    </div>
   </div>
 </div>
 
@@ -349,14 +369,32 @@
   <div class="home-topbar">
     <h1>🖇️ Tableaux collaboratifs</h1>
     <span class="role-badge" id="homeRoleBadge">Élève</span>
+    <span class="role-badge" id="homeClassBadge" style="display:none; background:var(--c-card);"></span>
+    <button class="btn-ghost" id="changeClassBtn" style="display:none;">Changer de classe</button>
     <button class="btn-ghost" id="logoutBtn">Se déconnecter</button>
   </div>
   <div class="home-body">
+    <div class="panel" id="classesPanel" style="display:none;">
+      <h2>Mes classes</h2>
+      <div class="create-row">
+        <input type="text" id="newClassName" placeholder="Nom de la classe (ex. 4B-Histoire) — servira de mot de passe élève">
+        <button class="btn-primary" id="createClassBtn">+ Créer la classe</button>
+      </div>
+      <div class="board-list" id="classList" style="margin-top:12px;"></div>
+      <div class="empty-note" id="classEmptyNote" style="display:none;">
+        Aucune classe pour l'instant. Créez-en une pour pouvoir y placer des tableaux.
+      </div>
+    </div>
+
     <div class="panel" id="createPanel" style="display:none;">
       <h2>Créer un tableau</h2>
       <div class="create-row">
         <input type="text" id="newBoardName" placeholder="Nom du tableau (ex. Chapitre 3 — Les fractions)">
+        <select id="newBoardClass"></select>
         <button class="btn-primary" id="createBoardBtn">+ Créer</button>
+      </div>
+      <div class="empty-note" id="noClassNote" style="display:none;">
+        Créez d'abord une classe ci-dessus pour pouvoir y placer un tableau.
       </div>
     </div>
 
@@ -465,6 +503,9 @@ const FIREBASE_CONFIG = {
 
 let role = null; // 'eleve' | 'professeur'
 let boardsIndex = [];
+let classesIndex = [];
+let currentClassId = null;
+let currentClassName = '';
 let currentBoardId = null;
 let boardStorageKey = null;
 let boardPollTimer = null;
@@ -481,13 +522,22 @@ const nativeStorage = (typeof window['storage'] !== 'undefined') ? window['stora
 const LOCAL_PREFIX = 'tqr:';
 
 let firestoreDb = null;
+let firebaseInitError = null; // 'sdk-not-loaded' | 'init-failed' | null
 if(!nativeStorage && FIREBASE_CONFIG.apiKey){
-  try{
-    firebase.initializeApp(FIREBASE_CONFIG);
-    firestoreDb = firebase.firestore();
-  }catch(e){
-    console.error('Échec d\'initialisation Firebase', e);
-    firestoreDb = null;
+  if(typeof firebase === 'undefined'){
+    // Le SDK chargé depuis gstatic.com (balises <script> dans le <head>) n'est pas arrivé :
+    // réseau bloquant ce domaine (fréquent sur un Wi-Fi d'établissement), coupure, ou navigateur qui bloque le script.
+    firebaseInitError = 'sdk-not-loaded';
+    console.error('SDK Firebase non chargé (firebase est undefined) — vérifiez que gstatic.com n\'est pas bloqué sur ce réseau.');
+  } else {
+    try{
+      firebase.initializeApp(FIREBASE_CONFIG);
+      firestoreDb = firebase.firestore();
+    }catch(e){
+      firebaseInitError = 'init-failed';
+      console.error('Échec d\'initialisation Firebase', e);
+      firestoreDb = null;
+    }
   }
 }
 
@@ -552,7 +602,11 @@ const storageAdapter = {
   if(FIREBASE_CONFIG.apiKey){
     if(!firestoreDb){
       storageMode = 'none';
-      banner.textContent = "⚠️ Configuration Firebase invalide (vérifiez FIREBASE_CONFIG) : rien ne sera synchronisé.";
+      if(firebaseInitError === 'sdk-not-loaded'){
+        banner.textContent = "⚠️ Le SDK Firebase n'a pas pu se charger sur cet appareil (réseau qui bloque gstatic.com — fréquent en 4G avec un filtrage opérateur). Essayez de basculer vers le Wi-Fi.";
+      } else {
+        banner.textContent = "⚠️ Configuration Firebase invalide (vérifiez FIREBASE_CONFIG) : rien ne sera synchronisé.";
+      }
       banner.style.display = 'block';
       return;
     }
@@ -593,9 +647,33 @@ function showScreen(id){
 
 /* ---------------- Écran de connexion ---------------- */
 document.getElementById('roleEleve').onclick = () => {
-  role = 'eleve';
-  enterHome();
+  document.getElementById('classGateForm').classList.add('visible');
+  document.getElementById('classPassword').focus();
 };
+document.getElementById('classCancel').onclick = () => {
+  document.getElementById('classGateForm').classList.remove('visible');
+  document.getElementById('classError').textContent = '';
+  document.getElementById('classPassword').value = '';
+};
+document.getElementById('classSubmit').onclick = submitClassPassword;
+document.getElementById('classPassword').addEventListener('keydown', (e) => {
+  if(e.key === 'Enter') submitClassPassword();
+});
+async function submitClassPassword(){
+  const val = document.getElementById('classPassword').value.trim();
+  if(!val) return;
+  await loadClassesIndex();
+  const match = classesIndex.find(c => c.name.trim().toLowerCase() === val.toLowerCase());
+  if(match){
+    role = 'eleve';
+    currentClassId = match.id;
+    currentClassName = match.name;
+    enterHome();
+  } else {
+    document.getElementById('classError').textContent = 'Classe introuvable. Vérifiez le nom auprès de votre professeur.';
+  }
+}
+
 document.getElementById('roleProf').onclick = () => {
   document.getElementById('teacherForm').classList.add('visible');
   document.getElementById('teacherPassword').focus();
@@ -613,6 +691,8 @@ function submitTeacherPassword(){
   const val = document.getElementById('teacherPassword').value;
   if(val === TEACHER_PASSWORD){
     role = 'professeur';
+    currentClassId = null;
+    currentClassName = '';
     enterHome();
   } else {
     document.getElementById('loginError').textContent = 'Mot de passe incorrect.';
@@ -623,21 +703,154 @@ function enterHome(){
   document.getElementById('teacherPassword').value = '';
   document.getElementById('loginError').textContent = '';
   document.getElementById('teacherForm').classList.remove('visible');
+  document.getElementById('classPassword').value = '';
+  document.getElementById('classError').textContent = '';
+  document.getElementById('classGateForm').classList.remove('visible');
   showScreen('screenHome');
   document.getElementById('homeRoleBadge').textContent = role === 'professeur' ? 'Professeur' : 'Élève';
+  document.getElementById('classesPanel').style.display = role === 'professeur' ? 'block' : 'none';
   document.getElementById('createPanel').style.display = role === 'professeur' ? 'block' : 'none';
   document.getElementById('sharePanel').style.display = role === 'professeur' ? 'block' : 'none';
+
+  const classBadge = document.getElementById('homeClassBadge');
+  const changeClassBtn = document.getElementById('changeClassBtn');
+  if(role === 'eleve'){
+    classBadge.textContent = 'Classe : ' + currentClassName;
+    classBadge.style.display = 'inline-block';
+    changeClassBtn.style.display = 'inline-block';
+  } else {
+    classBadge.style.display = 'none';
+    changeClassBtn.style.display = 'none';
+  }
+
   if(role === 'professeur'){
     document.getElementById('shareUrl').value = window.location.href;
   }
-  loadBoardsIndex();
+  loadClassesIndex().then(loadBoardsIndex);
 }
+
+document.getElementById('changeClassBtn').onclick = () => {
+  currentClassId = null;
+  currentClassName = '';
+  role = null;
+  showScreen('screenLogin');
+  document.getElementById('roleEleve').click();
+};
 
 document.getElementById('logoutBtn').onclick = () => {
   role = null;
   currentBoardId = null;
+  currentClassId = null;
+  currentClassName = '';
   showScreen('screenLogin');
 };
+
+/* ---------------- Gestion des classes (professeur) ---------------- */
+function classUid(){ return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+
+async function loadClassesIndex(){
+  try{
+    const res = await storageAdapter.get('classes-index', true);
+    classesIndex = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){
+    classesIndex = [];
+  }
+  renderClassList();
+}
+async function saveClassesIndex(){
+  try{ await storageAdapter.set('classes-index', JSON.stringify(classesIndex), true); }
+  catch(e){ console.error('Erreur de sauvegarde de la liste des classes', e); }
+}
+
+function renderClassList(){
+  const list = document.getElementById('classList');
+  const emptyNote = document.getElementById('classEmptyNote');
+  if(!list) return;
+  list.innerHTML = '';
+  emptyNote.style.display = classesIndex.length ? 'none' : 'block';
+
+  classesIndex.slice().sort((a,b) => b.createdAt - a.createdAt).forEach(cls => {
+    const count = boardsIndex.filter(b => b.classId === cls.id).length;
+    const row = document.createElement('div');
+    row.className = 'board-row';
+
+    const info = document.createElement('div');
+    info.className = 'grow';
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = cls.name;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = count + ' tableau(x) — mot de passe élève : "' + cls.name + '"';
+    info.appendChild(name); info.appendChild(meta);
+    row.appendChild(info);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn-reset';
+    delBtn.textContent = 'Supprimer';
+    delBtn.onclick = () => deleteClass(cls.id);
+    row.appendChild(delBtn);
+
+    list.appendChild(row);
+  });
+
+  renderBoardClassOptions();
+}
+
+document.getElementById('createClassBtn').onclick = async () => {
+  const input = document.getElementById('newClassName');
+  const name = input.value.trim();
+  if(!name) return;
+  if(classesIndex.some(c => c.name.trim().toLowerCase() === name.toLowerCase())){
+    alert('Une classe porte déjà ce nom.');
+    return;
+  }
+  classesIndex.push({ id: classUid(), name, createdAt: Date.now() });
+  input.value = '';
+  await saveClassesIndex();
+  renderClassList();
+};
+document.getElementById('newClassName').addEventListener('keydown', (e) => {
+  if(e.key === 'Enter') document.getElementById('createClassBtn').click();
+});
+
+async function deleteClass(id){
+  const cls = classesIndex.find(c => c.id === id);
+  if(!cls) return;
+  const affectedBoards = boardsIndex.filter(b => b.classId === id);
+  const warning = affectedBoards.length
+    ? `Supprimer la classe "${cls.name}" supprimera aussi ses ${affectedBoards.length} tableau(x) associé(s), définitivement. Continuer ?`
+    : `Supprimer la classe "${cls.name}" ?`;
+  if(!confirm(warning)) return;
+
+  classesIndex = classesIndex.filter(c => c.id !== id);
+  for(const b of affectedBoards){
+    try{ await storageAdapter.delete(`board:${b.id}`, true); }catch(e){ /* déjà absent */ }
+    try{ await storageAdapter.delete(`board-backup:${b.id}`, true); }catch(e){ /* déjà absent */ }
+  }
+  boardsIndex = boardsIndex.filter(b => b.classId !== id);
+  await saveClassesIndex();
+  await saveBoardsIndex();
+  renderClassList();
+  renderBoardList();
+}
+
+function renderBoardClassOptions(){
+  const select = document.getElementById('newBoardClass');
+  const noClassNote = document.getElementById('noClassNote');
+  const createRow = document.getElementById('createBoardBtn').parentElement;
+  if(!select) return;
+  select.innerHTML = '';
+  classesIndex.slice().sort((a,b) => a.name.localeCompare(b.name)).forEach(cls => {
+    const opt = document.createElement('option');
+    opt.value = cls.id;
+    opt.textContent = cls.name;
+    select.appendChild(opt);
+  });
+  const hasClasses = classesIndex.length > 0;
+  createRow.style.display = hasClasses ? 'flex' : 'none';
+  noClassNote.style.display = hasClasses ? 'none' : 'block';
+}
 
 /* ---------------- Gestion des tableaux (accueil) ---------------- */
 function uid(){ return 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
@@ -650,62 +863,115 @@ async function loadBoardsIndex(){
     boardsIndex = [];
   }
   renderBoardList();
+  if(role === 'professeur') renderClassList();
 }
 async function saveBoardsIndex(){
   try{ await storageAdapter.set('boards-index', JSON.stringify(boardsIndex), true); }
   catch(e){ console.error('Erreur de sauvegarde de la liste des tableaux', e); }
 }
 
+function className(classId){
+  const cls = classesIndex.find(c => c.id === classId);
+  return cls ? cls.name : 'Sans classe';
+}
+
+function renderBoardRow(board){
+  const row = document.createElement('div');
+  row.className = 'board-row';
+
+  const info = document.createElement('div');
+  info.className = 'grow';
+  const name = document.createElement('div');
+  name.className = 'name';
+  name.textContent = board.name;
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  meta.textContent = 'Créé le ' + new Date(board.createdAt).toLocaleString('fr-FR', { dateStyle:'short', timeStyle:'short' });
+  info.appendChild(name); info.appendChild(meta);
+  row.appendChild(info);
+
+  const openBtn = document.createElement('button');
+  openBtn.className = 'btn-primary';
+  openBtn.textContent = 'Ouvrir';
+  openBtn.onclick = () => openBoard(board.id, board.name);
+  row.appendChild(openBtn);
+
+  if(role === 'professeur'){
+    const renameBtn = document.createElement('button');
+    renameBtn.className = 'btn-ghost';
+    renameBtn.textContent = 'Renommer';
+    renameBtn.onclick = () => renameBoard(board.id);
+    row.appendChild(renameBtn);
+
+    if(classesIndex.length){
+      const moveSelect = document.createElement('select');
+      moveSelect.title = 'Déplacer vers une autre classe';
+      classesIndex.slice().sort((a,b) => a.name.localeCompare(b.name)).forEach(cls => {
+        const opt = document.createElement('option');
+        opt.value = cls.id;
+        opt.textContent = cls.name;
+        if(cls.id === board.classId) opt.selected = true;
+        moveSelect.appendChild(opt);
+      });
+      moveSelect.onchange = async () => {
+        board.classId = moveSelect.value;
+        await saveBoardsIndex();
+        renderBoardList();
+        renderClassList();
+      };
+      row.appendChild(moveSelect);
+    }
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn-reset';
+    delBtn.textContent = 'Supprimer';
+    delBtn.onclick = () => deleteBoard(board.id);
+    row.appendChild(delBtn);
+  }
+
+  return row;
+}
+
 function renderBoardList(){
   const list = document.getElementById('boardList');
   const emptyNote = document.getElementById('boardEmptyNote');
   list.innerHTML = '';
+
+  if(role === 'eleve'){
+    const visible = boardsIndex.filter(b => b.classId === currentClassId);
+    emptyNote.style.display = visible.length ? 'none' : 'block';
+    visible.slice().sort((a,b) => b.createdAt - a.createdAt).forEach(board => {
+      list.appendChild(renderBoardRow(board));
+    });
+    return;
+  }
+
+  // Professeur : regroupé par classe, puis les tableaux sans classe
   emptyNote.style.display = boardsIndex.length ? 'none' : 'block';
+  const groups = classesIndex.slice().sort((a,b) => a.name.localeCompare(b.name)).map(c => c.id);
+  groups.push(null); // "sans classe" en dernier
 
-  boardsIndex.slice().sort((a,b) => b.createdAt - a.createdAt).forEach(board => {
-    const row = document.createElement('div');
-    row.className = 'board-row';
+  groups.forEach(classId => {
+    const boardsInGroup = boardsIndex
+      .filter(b => (b.classId || null) === classId)
+      .sort((a,b) => b.createdAt - a.createdAt);
+    if(!boardsInGroup.length) return;
 
-    const info = document.createElement('div');
-    info.className = 'grow';
-    const name = document.createElement('div');
-    name.className = 'name';
-    name.textContent = board.name;
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    meta.textContent = 'Créé le ' + new Date(board.createdAt).toLocaleString('fr-FR', { dateStyle:'short', timeStyle:'short' });
-    info.appendChild(name); info.appendChild(meta);
-    row.appendChild(info);
+    const title = document.createElement('div');
+    title.className = 'class-group-title';
+    title.textContent = classId ? className(classId) : 'Sans classe';
+    list.appendChild(title);
 
-    const openBtn = document.createElement('button');
-    openBtn.className = 'btn-primary';
-    openBtn.textContent = 'Ouvrir';
-    openBtn.onclick = () => openBoard(board.id, board.name);
-    row.appendChild(openBtn);
-
-    if(role === 'professeur'){
-      const renameBtn = document.createElement('button');
-      renameBtn.className = 'btn-ghost';
-      renameBtn.textContent = 'Renommer';
-      renameBtn.onclick = () => renameBoard(board.id);
-      row.appendChild(renameBtn);
-
-      const delBtn = document.createElement('button');
-      delBtn.className = 'btn-reset';
-      delBtn.textContent = 'Supprimer';
-      delBtn.onclick = () => deleteBoard(board.id);
-      row.appendChild(delBtn);
-    }
-
-    list.appendChild(row);
+    boardsInGroup.forEach(board => list.appendChild(renderBoardRow(board)));
   });
 }
 
 document.getElementById('createBoardBtn').onclick = async () => {
   const input = document.getElementById('newBoardName');
+  const classSelect = document.getElementById('newBoardClass');
   const name = input.value.trim();
-  if(!name) return;
-  boardsIndex.push({ id: uid(), name, createdAt: Date.now() });
+  if(!name || !classSelect.value) return;
+  boardsIndex.push({ id: uid(), name, classId: classSelect.value, createdAt: Date.now() });
   input.value = '';
   await saveBoardsIndex();
   renderBoardList();
@@ -731,7 +997,9 @@ async function deleteBoard(id){
   boardsIndex = boardsIndex.filter(b => b.id !== id);
   await saveBoardsIndex();
   try{ await storageAdapter.delete(`board:${id}`, true); }catch(e){ /* déjà absent */ }
+  try{ await storageAdapter.delete(`board-backup:${id}`, true); }catch(e){ /* déjà absent */ }
   renderBoardList();
+  renderClassList();
 }
 
 /* ---------------- Partage : QR code ---------------- */
