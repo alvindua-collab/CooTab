@@ -872,6 +872,8 @@ let cahierClassId = null;
 let cahierQuestions = [];
 let cahierView = 'menu'; // 'menu' | 'submit' | 'choose-menu' | 'list' | 'random'
 let cahierRandomQuestion = null;
+let cahierAnswerRevealed = false;
+let revealedAnswers = new Set();
 
 function cahierKey(classId){ return `class-questions:${classId}`; }
 function questionUid(){ return 'q' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
@@ -880,6 +882,8 @@ async function openCahier(classId){
   cahierClassId = classId;
   cahierView = 'menu';
   cahierRandomQuestion = null;
+  cahierAnswerRevealed = false;
+  revealedAnswers = new Set();
   document.getElementById('cahierModal').style.display = 'flex';
   await loadCahierQuestions();
   renderCahier();
@@ -945,26 +949,38 @@ function renderCahier(){
   body.appendChild(back);
 
   if(cahierView === 'submit'){
-    const label = document.createElement('label');
-    label.textContent = 'Une question par ligne :';
-    label.style.cssText = 'color:var(--chalk-dim); font-size:12px; display:block; margin-bottom:6px;';
-    body.appendChild(label);
+    const qLabel = document.createElement('label');
+    qLabel.textContent = 'Question :';
+    qLabel.style.cssText = 'color:var(--chalk-dim); font-size:12px; display:block; margin-bottom:6px;';
+    body.appendChild(qLabel);
 
-    const textarea = document.createElement('textarea');
-    textarea.rows = 6;
-    textarea.placeholder = 'Quelle est la capitale de la France ?\nPourquoi le ciel est-il bleu ?';
-    textarea.style.cssText = 'width:100%; border-radius:8px; border:1px solid rgba(245,241,230,0.25); background:rgba(0,0,0,0.25); color:var(--chalk); padding:10px; font-family:inherit; font-size:13px; margin-bottom:10px;';
-    body.appendChild(textarea);
+    const qTextarea = document.createElement('textarea');
+    qTextarea.rows = 3;
+    qTextarea.placeholder = 'Quelle est la capitale de la France ?';
+    qTextarea.style.cssText = 'width:100%; border-radius:8px; border:1px solid rgba(245,241,230,0.25); background:rgba(0,0,0,0.25); color:var(--chalk); padding:10px; font-family:inherit; font-size:13px; margin-bottom:12px;';
+    body.appendChild(qTextarea);
+
+    const aLabel = document.createElement('label');
+    aLabel.textContent = 'Réponse (facultative, dans un cadre séparé) :';
+    aLabel.style.cssText = 'color:var(--chalk-dim); font-size:12px; display:block; margin-bottom:6px;';
+    body.appendChild(aLabel);
+
+    const aTextarea = document.createElement('textarea');
+    aTextarea.rows = 3;
+    aTextarea.placeholder = 'Paris';
+    aTextarea.style.cssText = 'width:100%; border-radius:8px; border:1px solid rgba(245,241,230,0.25); background:rgba(0,0,0,0.25); color:var(--chalk); padding:10px; font-family:inherit; font-size:13px; margin-bottom:10px;';
+    body.appendChild(aTextarea);
 
     const addBtn = document.createElement('button');
     addBtn.className = 'btn-primary';
-    addBtn.textContent = '+ Ajouter';
+    addBtn.textContent = '+ Ajouter cette question';
     addBtn.onclick = async () => {
-      const lines = textarea.value.split('\n').map(l => l.trim()).filter(Boolean);
-      if(!lines.length) return;
-      lines.forEach(text => cahierQuestions.push({ id: questionUid(), text, askedAt: null }));
+      const text = qTextarea.value.trim();
+      const answer = aTextarea.value.trim();
+      if(!text) return;
+      cahierQuestions.push({ id: questionUid(), text, answer, askedAt: null, createdAt: Date.now() });
       await saveCahierQuestions();
-      textarea.value = '';
+      cahierView = 'menu';
       renderCahier();
     };
     body.appendChild(addBtn);
@@ -981,7 +997,7 @@ function renderCahier(){
     const btnRandom = document.createElement('button');
     btnRandom.className = 'btn-primary';
     btnRandom.textContent = '🎲 Choisir une question au hasard';
-    btnRandom.onclick = () => { cahierRandomQuestion = null; cahierView = 'random'; renderCahier(); };
+    btnRandom.onclick = () => { cahierRandomQuestion = null; cahierAnswerRevealed = false; cahierView = 'random'; renderCahier(); };
     row.appendChild(btnList); row.appendChild(btnRandom);
     body.appendChild(row);
     return;
@@ -1018,7 +1034,7 @@ function renderCahier(){
       text.textContent = q.text;
       const meta = document.createElement('div');
       meta.style.cssText = 'font-size:11px; color:var(--chalk-dim); margin-top:3px;';
-      meta.textContent = q.askedAt ? ('Posée le ' + formatDate(q.askedAt)) : 'Pas encore posée';
+      meta.textContent = 'Créée le ' + formatDate(q.createdAt) + ' — ' + (q.askedAt ? ('posée le ' + formatDate(q.askedAt)) : 'pas encore posée');
       info.appendChild(text); info.appendChild(meta);
       row.appendChild(info);
 
@@ -1048,6 +1064,29 @@ function renderCahier(){
       row.appendChild(delBtn);
 
       body.appendChild(row);
+
+      if(q.answer){
+        const answerBlock = document.createElement('div');
+        answerBlock.style.cssText = 'margin: -2px 0 10px 4px;';
+        const isRevealed = revealedAnswers.has(q.id);
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = 'btn-ghost';
+        toggleBtn.style.cssText = 'font-size:11px; padding:4px 9px;';
+        toggleBtn.textContent = isRevealed ? '🙈 Masquer la réponse' : '👁️ Voir la réponse';
+        toggleBtn.onclick = () => {
+          if(revealedAnswers.has(q.id)) revealedAnswers.delete(q.id);
+          else revealedAnswers.add(q.id);
+          renderCahier();
+        };
+        answerBlock.appendChild(toggleBtn);
+        if(isRevealed){
+          const answerText = document.createElement('div');
+          answerText.style.cssText = 'margin-top:6px; color:var(--chalk-dim); font-style:italic; font-size:12.5px;';
+          answerText.textContent = 'Réponse : ' + q.answer;
+          answerBlock.appendChild(answerText);
+        }
+        body.appendChild(answerBlock);
+      }
     });
     return;
   }
@@ -1057,7 +1096,7 @@ function renderCahier(){
     if(!cahierRandomQuestion && pool.length){
       cahierRandomQuestion = pool[Math.floor(Math.random() * pool.length)];
     }
-    if(!pool.length){
+    if(!cahierRandomQuestion){
       const p = document.createElement('p');
       p.className = 'backup-empty';
       p.textContent = "Toutes les questions ont déjà été posées ! Passez par la liste pour en réinitialiser si besoin.";
@@ -1066,9 +1105,34 @@ function renderCahier(){
     }
 
     const card = document.createElement('div');
-    card.style.cssText = 'background:rgba(245,241,230,0.08); border-radius:10px; padding:22px; margin-bottom:14px; font-size:16px; color:var(--chalk); text-align:center; line-height:1.5;';
+    card.style.cssText = 'background:rgba(245,241,230,0.08); border-radius:10px; padding:22px; margin-bottom:6px; font-size:16px; color:var(--chalk); text-align:center; line-height:1.5;';
     card.textContent = cahierRandomQuestion.text;
     body.appendChild(card);
+
+    const createdNote = document.createElement('p');
+    createdNote.style.cssText = 'text-align:center; color:var(--chalk-dim); font-size:11px; margin:0 0 12px;';
+    createdNote.textContent = 'Créée le ' + formatDate(cahierRandomQuestion.createdAt);
+    body.appendChild(createdNote);
+
+    if(cahierRandomQuestion.answer){
+      const answerRow = document.createElement('div');
+      answerRow.style.cssText = 'text-align:center; margin-bottom:14px;';
+      const revealBtn = document.createElement('button');
+      revealBtn.className = 'btn-ghost';
+      revealBtn.textContent = cahierAnswerRevealed ? '🙈 Masquer la réponse' : '👁️ Voir la réponse';
+      revealBtn.onclick = () => {
+        cahierAnswerRevealed = !cahierAnswerRevealed;
+        renderCahier();
+      };
+      answerRow.appendChild(revealBtn);
+      if(cahierAnswerRevealed){
+        const answerText = document.createElement('div');
+        answerText.style.cssText = 'margin-top:10px; color:var(--chalk-dim); font-style:italic; font-size:14px;';
+        answerText.textContent = 'Réponse : ' + cahierRandomQuestion.answer;
+        answerRow.appendChild(answerText);
+      }
+      body.appendChild(answerRow);
+    }
 
     const row = document.createElement('div');
     row.style.cssText = 'display:flex; gap:12px; justify-content:center; flex-wrap:wrap; align-items:center;';
@@ -1076,9 +1140,11 @@ function renderCahier(){
     const reroll = document.createElement('button');
     reroll.className = 'btn-ghost';
     reroll.textContent = '🎲 Tirer une autre';
+    reroll.disabled = pool.filter(q => q.id !== cahierRandomQuestion.id).length === 0;
     reroll.onclick = () => {
       const otherPool = pool.filter(q => q.id !== cahierRandomQuestion.id);
       if(otherPool.length) cahierRandomQuestion = otherPool[Math.floor(Math.random() * otherPool.length)];
+      cahierAnswerRevealed = false;
       renderCahier();
     };
     row.appendChild(reroll);
@@ -1087,15 +1153,21 @@ function renderCahier(){
     label.style.cssText = 'display:flex; align-items:center; gap:6px; color:var(--chalk); font-size:13px;';
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
+    checkbox.checked = !!cahierRandomQuestion.askedAt;
     checkbox.onchange = async () => {
-      if(checkbox.checked){
-        const q = cahierQuestions.find(x => x.id === cahierRandomQuestion.id);
-        if(q){ q.askedAt = Date.now(); await saveCahierQuestions(); }
-        renderCahier();
+      const q = cahierQuestions.find(x => x.id === cahierRandomQuestion.id);
+      if(q){
+        q.askedAt = checkbox.checked ? Date.now() : null;
+        await saveCahierQuestions();
       }
+      renderCahier();
     };
     label.appendChild(checkbox);
-    label.appendChild(document.createTextNode('Cette question a été posée le ' + formatDate(Date.now())));
+    label.appendChild(document.createTextNode(
+      cahierRandomQuestion.askedAt
+        ? ('Question posée le ' + formatDate(cahierRandomQuestion.askedAt))
+        : 'Cette question a été posée aujourd\'hui'
+    ));
     row.appendChild(label);
 
     body.appendChild(row);
