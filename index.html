@@ -60,6 +60,14 @@
     max-width:90vw;
     text-align:center;
   }
+  .app-brand{
+    font-family:'Segoe Print','Comic Sans MS',cursive;
+    color:var(--link);
+    font-size:44px;
+    letter-spacing:2px;
+    margin:0 0 4px;
+    line-height:1;
+  }
   .login-card h1{
     font-family:'Segoe Print','Comic Sans MS',cursive;
     color:var(--chalk);
@@ -345,6 +353,7 @@
 <!-- ===================== ÉCRAN DE CONNEXION ===================== -->
 <div class="screen visible" id="screenLogin">
   <div class="login-card">
+    <div class="app-brand">COOTAB</div>
     <h1>🖇️ Tableaux collaboratifs</h1>
     <p class="sub">Choisissez votre rôle pour continuer</p>
     <div class="role-row">
@@ -1422,6 +1431,8 @@ document.getElementById('shareUrl').addEventListener('keydown', (e) => { if(e.ke
    ÉCRAN DU TABLEAU (canvas Question / Réponse / Critique)
    ================================================================ */
 const CARD_W = 210, CARD_H = 120;
+const GRID_SQUARE_PX = 40; // taille d'un carreau du quadrillage (doit rester cohérent avec l'export PDF)
+const PDF_GRID_COLS = 30, PDF_GRID_ROWS = 20; // nombre de carreaux couverts par une page de PDF
 const ZOOM_MIN = 0.3, ZOOM_MAX = 2.5;
 
 const LABELS = { question: 'Question', answer: 'Réponse', critique: 'Critique / complément' };
@@ -1700,11 +1711,23 @@ function deleteFrame(id){
 }
 function getFrame(id){ return state.frames.find(f => f.id === id); }
 
+// Taille réellement affichée d'un cadre (peut dépasser CARD_W/CARD_H : photo, texte
+// long, ou élargissement temporaire pendant un export PDF). Reflète toujours le DOM
+// tel qu'il est au moment de l'appel.
+function getFrameSize(frame){
+  const el = canvas.querySelector(`.card[data-id="${frame.id}"]`);
+  return {
+    w: el ? el.offsetWidth : CARD_W,
+    h: el ? el.offsetHeight : CARD_H
+  };
+}
+
 function anchorPoint(frame, towardX, towardY){
-  const cx = frame.x + CARD_W/2, cy = frame.y + CARD_H/2;
+  const { w, h } = getFrameSize(frame);
+  const cx = frame.x + w/2, cy = frame.y + h/2;
   let dx = towardX - cx, dy = towardY - cy;
   if(dx === 0 && dy === 0) return {x:cx, y:cy};
-  const halfW = CARD_W/2, halfH = CARD_H/2;
+  const halfW = w/2, halfH = h/2;
   const scale = Math.min(
     Math.abs(dx) > 0.001 ? halfW/Math.abs(dx) : Infinity,
     Math.abs(dy) > 0.001 ? halfH/Math.abs(dy) : Infinity
@@ -1883,6 +1906,68 @@ function render(){
   });
 
   drawLinks();
+  drawPageBoundaries();
+}
+
+// Affiche sur le tableau, à titre indicatif, où tomberaient les coupures de
+// pages lors d'un export PDF (zones de PDF_GRID_COLS × PDF_GRID_ROWS carreaux).
+function drawPageBoundaries(){
+  const existing = linksSvg.querySelector('#pageBoundaries');
+  if(existing) existing.remove();
+  if(!state.frames.length) return;
+
+  const margin = 50;
+  const minX = Math.max(0, Math.min(...state.frames.map(f => f.x)) - margin);
+  const minY = Math.max(0, Math.min(...state.frames.map(f => f.y)) - margin);
+  const maxX = Math.max(...state.frames.map(f => f.x + getFrameSize(f).w)) + margin;
+  const maxY = Math.max(...state.frames.map(f => f.y + getFrameSize(f).h)) + margin;
+
+  const pageW = PDF_GRID_COLS * GRID_SQUARE_PX;
+  const pageH = PDF_GRID_ROWS * GRID_SQUARE_PX;
+  const cols = Math.ceil((maxX - minX) / pageW);
+  const rows = Math.ceil((maxY - minY) / pageH);
+
+  const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  group.setAttribute('id', 'pageBoundaries');
+  const lineColor = 'rgba(233,120,98,0.6)';
+
+  for(let r = 0; r <= rows; r++){
+    const y = minY + r * pageH;
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', minX); line.setAttribute('y1', y);
+    line.setAttribute('x2', minX + cols * pageW); line.setAttribute('y2', y);
+    line.setAttribute('stroke', lineColor);
+    line.setAttribute('stroke-width', '2');
+    line.setAttribute('stroke-dasharray', '10,6');
+    group.appendChild(line);
+  }
+  for(let c = 0; c <= cols; c++){
+    const x = minX + c * pageW;
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', x); line.setAttribute('y1', minY);
+    line.setAttribute('x2', x); line.setAttribute('y2', minY + rows * pageH);
+    line.setAttribute('stroke', lineColor);
+    line.setAttribute('stroke-width', '2');
+    line.setAttribute('stroke-dasharray', '10,6');
+    group.appendChild(line);
+  }
+
+  let pageNum = 1;
+  for(let r = 0; r < rows; r++){
+    for(let c = 0; c < cols; c++){
+      const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      label.setAttribute('x', minX + c * pageW + 10);
+      label.setAttribute('y', minY + r * pageH + 24);
+      label.setAttribute('fill', lineColor);
+      label.setAttribute('font-size', '16');
+      label.setAttribute('font-weight', '700');
+      label.textContent = 'Page ' + pageNum;
+      group.appendChild(label);
+      pageNum++;
+    }
+  }
+
+  linksSvg.appendChild(group);
 }
 
 function drawLinks(){
@@ -1900,8 +1985,10 @@ function drawLinks(){
     const from = getFrame(link.from);
     const to = getFrame(link.to);
     if(!from || !to) return;
-    const fromCenter = { x: from.x + CARD_W/2, y: from.y + CARD_H/2 };
-    const toCenter = { x: to.x + CARD_W/2, y: to.y + CARD_H/2 };
+    const fromSize = getFrameSize(from);
+    const toSize = getFrameSize(to);
+    const fromCenter = { x: from.x + fromSize.w/2, y: from.y + fromSize.h/2 };
+    const toCenter = { x: to.x + toSize.w/2, y: to.y + toSize.h/2 };
     const p1 = anchorPoint(from, toCenter.x, toCenter.y);
     const p2 = anchorPoint(to, fromCenter.x, fromCenter.y);
     const isCrit = from.type === 'critique';
@@ -1975,6 +2062,56 @@ document.getElementById('resetAll').onclick = async () => {
 };
 
 /* ---------------- Export du tableau en PDF ---------------- */
+function measureMaxLineWidth(text, font){
+  const c = measureMaxLineWidth._c || (measureMaxLineWidth._c = document.createElement('canvas'));
+  const ctx = c.getContext('2d');
+  ctx.font = font;
+  return (text || '').split('\n').reduce((m, line) => Math.max(m, ctx.measureText(line).width), 0);
+}
+
+// Prépare les cadres pour la capture PDF : html2canvas ne restitue pas fidèlement
+// le contenu des <textarea>/<input>, on les remplace donc par du texte simple
+// (correctement enrobé), et on élargit chaque cadre à son contenu — dans une
+// limite raisonnable — pour limiter le nombre de lignes coupées à l'affichage.
+function prepareCardsForExport(){
+  const MAX_CARD_WIDTH = 420;
+  state.frames.forEach(f => {
+    const el = canvas.querySelector(`.card[data-id="${f.id}"]`);
+    if(!el) return;
+
+    const textarea = el.querySelector('textarea');
+    const authorInput = el.querySelector('.author-input');
+    const authorPrefixEl = el.querySelector('.author-prefix');
+
+    const content = textarea ? (textarea.value || textarea.placeholder || '') : '';
+    const authorText = authorInput ? (authorInput.value || '') : '';
+    const contentWidth = measureMaxLineWidth(content, '13.5px "Segoe UI", system-ui, sans-serif');
+    const authorLineWidth = authorPrefixEl
+      ? measureMaxLineWidth(authorPrefixEl.textContent + ' ' + authorText, '10.5px "Segoe UI", system-ui, sans-serif')
+      : 0;
+    const naturalWidth = Math.max(contentWidth, authorLineWidth);
+    const newWidth = Math.min(MAX_CARD_WIDTH, Math.max(CARD_W, Math.ceil(naturalWidth) + 30));
+    el.style.width = newWidth + 'px';
+
+    if(textarea){
+      const div = document.createElement('div');
+      div.className = 'export-text-swap';
+      div.textContent = content;
+      div.style.cssText = 'width:100%; box-sizing:border-box; background:rgba(255,255,255,0.28); border-radius:6px; padding:6px 7px; font-size:13.5px; font-family:inherit; color:inherit; white-space:pre-wrap; word-break:break-word; min-height:64px;';
+      textarea.style.display = 'none';
+      textarea.insertAdjacentElement('afterend', div);
+    }
+    if(authorInput){
+      const span = document.createElement('span');
+      span.className = 'export-text-swap';
+      span.textContent = authorText;
+      span.style.cssText = 'font-family:inherit; font-size:11.5px; color:inherit;';
+      authorInput.style.display = 'none';
+      authorInput.insertAdjacentElement('afterend', span);
+    }
+  });
+}
+
 async function exportBoardToPdf(){
   if(!state.frames.length){
     alert('Ce tableau est vide, rien à exporter.');
@@ -1996,19 +2133,27 @@ async function exportBoardToPdf(){
   render();
 
   try{
-    // Zone occupée par les cadres, avec une marge, pour ne pas capturer
-    // tout le très grand canevas vide autour.
+    // html2canvas ne restitue pas fidèlement le contenu des <textarea>/<input> :
+    // on les remplace temporairement par du texte simple, correctement enrobé,
+    // et on élargit chaque cadre à son contenu (dans une limite raisonnable).
+    prepareCardsForExport();
+    drawLinks();
+    const pageBoundariesGroup = linksSvg.querySelector('#pageBoundaries');
+    if(pageBoundariesGroup) pageBoundariesGroup.style.display = 'none'; // repère d'écran uniquement, pas dans le PDF
+
+    // Zone occupée par les cadres (tailles réelles, post-élargissement), avec une
+    // marge, pour ne pas capturer tout le très grand canevas vide autour.
     const margin = 50;
     const minX = Math.max(0, Math.min(...state.frames.map(f => f.x)) - margin);
     const minY = Math.max(0, Math.min(...state.frames.map(f => f.y)) - margin);
-    const maxX = Math.max(...state.frames.map(f => f.x + CARD_W)) + margin;
-    const maxY = Math.max(...state.frames.map(f => f.y + CARD_H)) + margin;
+    const maxX = Math.max(...state.frames.map(f => f.x + getFrameSize(f).w)) + margin;
+    const maxY = Math.max(...state.frames.map(f => f.y + getFrameSize(f).h)) + margin;
 
     const captureScale = 2; // résolution de capture (px image = px CSS × captureScale)
     const snapshotCanvas = await html2canvas(canvas, {
       x: minX, y: minY,
       width: maxX - minX, height: maxY - minY,
-      backgroundColor: '#223229',
+      backgroundColor: '#ffffff', // fond blanc à l'export, pour ne pas gaspiller d'encre à l'impression
       scale: captureScale,
       useCORS: true
     });
@@ -2018,17 +2163,22 @@ async function exportBoardToPdf(){
     const classLabel = boardEntry ? className(boardEntry.classId) : '';
     const subtitle = (classLabel ? ('Classe : ' + classLabel + '  —  ') : '') + 'Exporté le ' + formatDate(Date.now());
 
-    // Échelle physique fixe : un cadre imprimé fait toujours TARGET_CARD_WIDTH_MM
-    // de large, quel que soit le nombre de cadres — c'est donc le nombre de pages
-    // qui s'adapte à la taille du tableau, jamais l'inverse.
-    const TARGET_CARD_WIDTH_MM = 70;
-    const devicePxPerMm = (captureScale * CARD_W) / TARGET_CARD_WIDTH_MM;
+    // Une page contient une zone fixe de PDF_GRID_COLS × PDF_GRID_ROWS carreaux du
+    // quadrillage du tableau (même repère que celui affiché à l'écran) — c'est donc
+    // le nombre de pages qui s'adapte à la taille du tableau, jamais l'inverse.
+    const tileWidthPx = PDF_GRID_COLS * GRID_SQUARE_PX * captureScale;
+    const tileHeightPx = PDF_GRID_ROWS * GRID_SQUARE_PX * captureScale;
 
     const PAGE_W = 297, PAGE_H = 210, PAGE_MARGIN = 10, HEADER_H = 12;
     const contentWidthMm = PAGE_W - PAGE_MARGIN * 2;
     const contentHeightMm = PAGE_H - PAGE_MARGIN * 2 - HEADER_H;
-    const tileWidthPx = Math.round(contentWidthMm * devicePxPerMm);
-    const tileHeightPx = Math.round(contentHeightMm * devicePxPerMm);
+    // mm par carreau : on garde des carreaux bien carrés sur le papier, quitte à
+    // laisser un peu de marge blanche sur le côté le moins contraignant.
+    const mmPerSquare = Math.min(contentWidthMm / PDF_GRID_COLS, contentHeightMm / PDF_GRID_ROWS);
+    const fullTileWidthMm = PDF_GRID_COLS * mmPerSquare;
+    const fullTileHeightMm = PDF_GRID_ROWS * mmPerSquare;
+    const offsetXMm = (contentWidthMm - fullTileWidthMm) / 2;
+    const devicePxPerMm = tileWidthPx / fullTileWidthMm;
 
     const cols = Math.ceil(snapshotCanvas.width / tileWidthPx);
     const rows = Math.ceil(snapshotCanvas.height / tileHeightPx);
@@ -2036,7 +2186,7 @@ async function exportBoardToPdf(){
 
     if(totalPages > 60){
       const proceed = confirm(
-        `Avec un cadre imprimé à ${TARGET_CARD_WIDTH_MM} mm de large, ce tableau nécessitera environ ${totalPages} pages ` +
+        `Avec une page couvrant ${PDF_GRID_COLS}×${PDF_GRID_ROWS} carreaux, ce tableau nécessitera environ ${totalPages} pages ` +
         `(${cols} colonnes × ${rows} lignes). Continuer quand même ?`
       );
       if(!proceed) return;
@@ -2056,13 +2206,16 @@ async function exportBoardToPdf(){
         const tileCanvas = document.createElement('canvas');
         tileCanvas.width = sw;
         tileCanvas.height = sh;
-        tileCanvas.getContext('2d').drawImage(snapshotCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+        const tileCtx = tileCanvas.getContext('2d');
+        tileCtx.fillStyle = '#ffffff';
+        tileCtx.fillRect(0, 0, sw, sh);
+        tileCtx.drawImage(snapshotCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
         const tileDataUrl = tileCanvas.toDataURL('image/png');
 
         const tileWidthMm = sw / devicePxPerMm;
         const tileHeightMm = sh / devicePxPerMm;
 
-        if(pageIndex > 0) pdf.addPage([PAGE_W, PAGE_H], 'landscape');
+        if(pageIndex > 0) pdf.addPage();
         pageIndex++;
 
         pdf.setFontSize(11);
@@ -2072,7 +2225,7 @@ async function exportBoardToPdf(){
         pdf.setTextColor(110, 110, 110);
         pdf.text(subtitle, PAGE_MARGIN, PAGE_MARGIN + 9);
 
-        pdf.addImage(tileDataUrl, 'PNG', PAGE_MARGIN, PAGE_MARGIN + HEADER_H, tileWidthMm, tileHeightMm);
+        pdf.addImage(tileDataUrl, 'PNG', PAGE_MARGIN + offsetXMm, PAGE_MARGIN + HEADER_H, tileWidthMm, tileHeightMm);
       }
     }
 
@@ -2111,7 +2264,7 @@ document.getElementById('backHome').onclick = () => {
 function openBoard(id, name){
   currentBoardId = id;
   boardStorageKey = `board:${id}`;
-  document.getElementById('boardTitle').innerHTML = `🖇️ ${name} <small>tableau collaboratif</small>`;
+  document.getElementById('boardTitle').innerHTML = `🖇️ ${name} <small>projets coopératifs</small>`;
   document.getElementById('resetAll').style.display = role === 'professeur' ? 'inline-block' : 'none';
   document.getElementById('backupsBtn').style.display = role === 'professeur' ? 'inline-block' : 'none';
   document.getElementById('exportPdfBtn').style.display = role === 'professeur' ? 'inline-block' : 'none';
