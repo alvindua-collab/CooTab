@@ -239,6 +239,23 @@
     cursor:grab; user-select:none;
   }
   .card.dragging{cursor:grabbing; opacity:0.92; z-index:50;}
+  .resize-handle{
+    position:absolute;
+    top:0; right:0;
+    width:9px; height:100%;
+    cursor:ew-resize;
+    border-radius:0 10px 10px 0;
+  }
+  .resize-handle::after{
+    content:'';
+    position:absolute;
+    top:50%; right:3px;
+    width:3px; height:22px;
+    transform:translateY(-50%);
+    background:rgba(0,0,0,0.25);
+    border-radius:2px;
+  }
+  .resize-handle:hover::after{background:rgba(0,0,0,0.45);}
   .card.q{background:linear-gradient(160deg, var(--q-card), var(--q-card-dark)); color:#0e1b23;}
   .card.a{background:linear-gradient(160deg, var(--a-card), var(--a-card-dark)); color:#241705;}
   .card.c{background:linear-gradient(160deg, var(--c-card), var(--c-card-dark)); color:#1e1230;}
@@ -262,12 +279,19 @@
   .card .eyebrow .actions{display:flex; align-items:center;}
 
   .photo-wrap{position:relative; margin-bottom:6px;}
-  .photo-wrap img{width:100%; max-height:140px; object-fit:cover; border-radius:6px; display:block; cursor:zoom-in;}
+  .photo-wrap img{border-radius:6px; display:block; cursor:zoom-in;}
   .photo-rm{
     position:absolute; top:4px; right:4px; width:20px; height:20px; border-radius:50%;
     border:none; background:rgba(0,0,0,0.55); color:#fff; font-size:11px; line-height:1; padding:0; cursor:pointer;
   }
   .photo-rm:hover{background:rgba(0,0,0,0.75);}
+  .photo-size-row{
+    display:flex; align-items:center; gap:6px;
+    margin-top:4px;
+  }
+  .photo-size-row input[type=range]{
+    flex:1; height:14px; margin:0;
+  }
 
   .author-row{display:flex; align-items:baseline; gap:4px; flex-wrap:wrap; margin-bottom:6px;}
   .author-prefix{font-size:10.5px; font-weight:600; opacity:0.75;}
@@ -527,6 +551,7 @@ const FIREBASE_CONFIG = {
   	appId: "1:124531519718:web:6a3b9e95616717326e8b27",
   	measurementId: "G-KFZFXL0QLZ"
 };
+
 
 let role = null; // 'eleve' | 'professeur'
 let boardsIndex = [];
@@ -1456,6 +1481,7 @@ let linkMode = false;
 let linkSource = null;
 let dragging = null;
 let panning = null;
+let resizingCard = null;
 let editingId = null;
 let lastSavedJSON = null;
 let zoom = 1;
@@ -1787,6 +1813,7 @@ function render(){
     el.className = 'card ' + typeClass;
     el.style.left = frame.x + 'px';
     el.style.top = frame.y + 'px';
+    el.style.width = (frame.cardWidth || CARD_W) + 'px';
     el.dataset.id = frame.id;
 
     if(linkMode){
@@ -1871,12 +1898,21 @@ function render(){
     el.appendChild(authorRow);
 
     if(canHavePhoto(frame.type) && frame.photo){
+      // La largeur du cadre est celle réglée manuellement, sauf si la photo
+      // (à la taille choisie) a besoin de davantage de place.
+      const photoWidth = frame.photoSize || 210;
+      const currentWidth = parseInt(el.style.width, 10) || CARD_W;
+      el.style.width = Math.max(currentWidth, photoWidth + 24) + 'px';
+
       const photoWrap = document.createElement('div');
       photoWrap.className = 'photo-wrap';
       const img = document.createElement('img');
       img.src = frame.photo;
       img.alt = 'Photo jointe';
       img.title = 'Cliquer pour agrandir';
+      img.style.width = photoWidth + 'px';
+      img.style.maxWidth = '100%';
+      img.style.height = 'auto';
       img.onclick = (e) => { e.stopPropagation(); openLightbox(frame); };
       img.addEventListener('mousedown', (e) => e.stopPropagation());
       photoWrap.appendChild(img);
@@ -1884,9 +1920,36 @@ function render(){
       rm.className = 'photo-rm';
       rm.textContent = '✕';
       rm.title = 'Supprimer la photo';
-      rm.onclick = (e) => { e.stopPropagation(); frame.photo = null; render(); saveBoardState(); };
+      rm.onclick = (e) => { e.stopPropagation(); frame.photo = null; frame.photoSize = null; render(); saveBoardState(); };
       rm.addEventListener('mousedown', (e) => e.stopPropagation());
       photoWrap.appendChild(rm);
+
+      const sizeRow = document.createElement('div');
+      sizeRow.className = 'photo-size-row';
+      const sizeIcon = document.createElement('span');
+      sizeIcon.textContent = '🔍';
+      sizeIcon.style.fontSize = '10px';
+      sizeRow.appendChild(sizeIcon);
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = '140'; slider.max = '600'; slider.step = '20';
+      slider.value = photoWidth;
+      slider.title = 'Taille de la photo (jusqu\'à la moitié d\'une page de tableau)';
+      slider.style.accentColor = 'var(--link)';
+      slider.addEventListener('mousedown', (e) => e.stopPropagation());
+      slider.addEventListener('input', (e) => {
+        const w = parseInt(e.target.value, 10);
+        img.style.width = w + 'px';
+        el.style.width = Math.max(frame.cardWidth || CARD_W, w + 24) + 'px';
+      });
+      slider.addEventListener('change', async (e) => {
+        frame.photoSize = parseInt(e.target.value, 10);
+        await saveBoardState();
+        render();
+      });
+      sizeRow.appendChild(slider);
+      photoWrap.appendChild(sizeRow);
+
       el.appendChild(photoWrap);
     }
 
@@ -1898,6 +1961,15 @@ function render(){
     textarea.addEventListener('input', (e) => { frame.text = e.target.value; saveBoardState(); });
     textarea.addEventListener('mousedown', (e) => e.stopPropagation());
     el.appendChild(textarea);
+
+    const resizeHandle = document.createElement('div');
+    resizeHandle.className = 'resize-handle';
+    resizeHandle.title = 'Régler la largeur du cadre (pour afficher tout le texte)';
+    resizeHandle.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      resizingCard = { id: frame.id, startX: e.clientX, startWidth: el.offsetWidth, currentWidth: el.offsetWidth };
+    });
+    el.appendChild(resizeHandle);
 
     el.addEventListener('mousedown', (e) => onCardMouseDown(e, frame));
     el.addEventListener('click', (e) => onCardClick(e, frame));
@@ -2033,6 +2105,16 @@ function onCardMouseDown(e, frame){
   e.currentTarget.classList.add('dragging');
 }
 canvasWrap.addEventListener('mousemove', (e) => {
+  if(resizingCard){
+    const frame = getFrame(resizingCard.id);
+    if(!frame){ return; }
+    const deltaX = (e.clientX - resizingCard.startX) / zoom;
+    const newWidth = Math.min(700, Math.max(CARD_W, Math.round(resizingCard.startWidth + deltaX)));
+    const el = canvas.querySelector(`.card[data-id="${frame.id}"]`);
+    if(el) el.style.width = newWidth + 'px';
+    resizingCard.currentWidth = newWidth;
+    return;
+  }
   if(!dragging) return;
   const frame = getFrame(dragging.id);
   if(!frame) return;
@@ -2042,11 +2124,20 @@ canvasWrap.addEventListener('mousemove', (e) => {
   dragging.moved = true;
   render();
 });
-window.addEventListener('mouseup', () => {
+window.addEventListener('mouseup', async () => {
   if(dragging){
     canvas.querySelectorAll('.card.dragging').forEach(el => el.classList.remove('dragging'));
     if(dragging.moved) saveBoardState();
     dragging = null;
+  }
+  if(resizingCard){
+    const frame = getFrame(resizingCard.id);
+    if(frame){
+      frame.cardWidth = resizingCard.currentWidth;
+      await saveBoardState();
+    }
+    resizingCard = null;
+    render();
   }
 });
 
@@ -2073,25 +2164,19 @@ function measureMaxLineWidth(text, font){
 // le contenu des <textarea>/<input>, on les remplace donc par du texte simple
 // (correctement enrobé), et on élargit chaque cadre à son contenu — dans une
 // limite raisonnable — pour limiter le nombre de lignes coupées à l'affichage.
+// Ne recalcule plus rien : la largeur du cadre à l'export est exactement celle
+// déjà réglée à l'écran (largeur manuelle et/ou photo) — c'est tout l'intérêt
+// de pouvoir régler cette largeur soi-même avant export.
 function prepareCardsForExport(){
-  const MAX_CARD_WIDTH = 420;
   state.frames.forEach(f => {
     const el = canvas.querySelector(`.card[data-id="${f.id}"]`);
     if(!el) return;
 
     const textarea = el.querySelector('textarea');
     const authorInput = el.querySelector('.author-input');
-    const authorPrefixEl = el.querySelector('.author-prefix');
 
     const content = textarea ? (textarea.value || textarea.placeholder || '') : '';
     const authorText = authorInput ? (authorInput.value || '') : '';
-    const contentWidth = measureMaxLineWidth(content, '13.5px "Segoe UI", system-ui, sans-serif');
-    const authorLineWidth = authorPrefixEl
-      ? measureMaxLineWidth(authorPrefixEl.textContent + ' ' + authorText, '10.5px "Segoe UI", system-ui, sans-serif')
-      : 0;
-    const naturalWidth = Math.max(contentWidth, authorLineWidth);
-    const newWidth = Math.min(MAX_CARD_WIDTH, Math.max(CARD_W, Math.ceil(naturalWidth) + 30));
-    el.style.width = newWidth + 'px';
 
     if(textarea){
       const div = document.createElement('div');
@@ -2109,6 +2194,15 @@ function prepareCardsForExport(){
       authorInput.style.display = 'none';
       authorInput.insertAdjacentElement('afterend', span);
     }
+
+    // On masque les contrôles qui n'ont de sens qu'à l'écran (suppression photo,
+    // curseur de taille, poignée de redimensionnement).
+    const photoRm = el.querySelector('.photo-rm');
+    if(photoRm) photoRm.style.display = 'none';
+    const photoSizeRow = el.querySelector('.photo-size-row');
+    if(photoSizeRow) photoSizeRow.style.display = 'none';
+    const resizeHandle = el.querySelector('.resize-handle');
+    if(resizeHandle) resizeHandle.style.display = 'none';
   });
 }
 
@@ -2264,7 +2358,7 @@ document.getElementById('backHome').onclick = () => {
 function openBoard(id, name){
   currentBoardId = id;
   boardStorageKey = `board:${id}`;
-  document.getElementById('boardTitle').innerHTML = `🖇️ ${name} <small>projets coopératifs</small>`;
+  document.getElementById('boardTitle').innerHTML = `🖇️ ${name} <small>tableau coopératif</small>`;
   document.getElementById('resetAll').style.display = role === 'professeur' ? 'inline-block' : 'none';
   document.getElementById('backupsBtn').style.display = role === 'professeur' ? 'inline-block' : 'none';
   document.getElementById('exportPdfBtn').style.display = role === 'professeur' ? 'inline-block' : 'none';
