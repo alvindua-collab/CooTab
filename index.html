@@ -223,14 +223,14 @@
   .canvas-wrap{flex:1; overflow:auto; position:relative; cursor:grab;}
   .canvas-wrap.panning{cursor:grabbing;}
   .canvas{
-    position:relative; width:2600px; height:1700px; transform-origin:0 0;
+    position:relative; transform-origin:0 0;
     background-image:
       linear-gradient(var(--board-line) 1px, transparent 1px),
       linear-gradient(90deg, var(--board-line) 1px, transparent 1px);
     background-size:40px 40px;
   }
 
-  svg.links{position:absolute; top:0; left:0; pointer-events:none; width:2600px; height:1700px;}
+  svg.links{position:absolute; top:0; left:0; pointer-events:none;}
 
   .card{
     position:absolute; width:210px; min-height:120px; border-radius:10px;
@@ -551,7 +551,6 @@ const FIREBASE_CONFIG = {
   	appId: "1:124531519718:web:6a3b9e95616717326e8b27",
   	measurementId: "G-KFZFXL0QLZ"
 };
-
 
 let role = null; // 'eleve' | 'professeur'
 let boardsIndex = [];
@@ -1458,6 +1457,8 @@ document.getElementById('shareUrl').addEventListener('keydown', (e) => { if(e.ke
 const CARD_W = 210, CARD_H = 120;
 const GRID_SQUARE_PX = 40; // taille d'un carreau du quadrillage (doit rester cohérent avec l'export PDF)
 const PDF_GRID_COLS = 30, PDF_GRID_ROWS = 20; // nombre de carreaux couverts par une page de PDF
+const MIN_CANVAS_W = 2600, MIN_CANVAS_H = 1700; // taille de départ, comme avant
+const CANVAS_BUFFER = 500; // marge laissée au-delà du dernier cadre pour continuer à en ajouter/déplacer
 const ZOOM_MIN = 0.3, ZOOM_MAX = 2.5;
 
 const LABELS = { question: 'Question', answer: 'Réponse', critique: 'Critique / complément' };
@@ -1718,9 +1719,15 @@ document.getElementById('backupModal').addEventListener('click', (e) => {
 });
 
 function addFrame(type){
-  const count = state.frames.length;
-  const x = 60 + (count % 7) * 60 + Math.random()*40;
-  const y = 60 + Math.floor(count/7) * 60 + Math.random()*40;
+  // Nouveau cadre centré sur la zone actuellement visible à l'écran (et non
+  // à une position fixe), avec un petit décalage aléatoire pour éviter que
+  // plusieurs ajouts consécutifs se superposent exactement.
+  const centerX = (canvasWrap.scrollLeft + canvasWrap.clientWidth / 2) / zoom;
+  const centerY = (canvasWrap.scrollTop + canvasWrap.clientHeight / 2) / zoom;
+  const jitterX = (Math.random() - 0.5) * 60;
+  const jitterY = (Math.random() - 0.5) * 60;
+  const x = Math.max(0, centerX - CARD_W / 2 + jitterX);
+  const y = Math.max(0, centerY - CARD_H / 2 + jitterY);
   const frame = { id: frameUid(), type, text: '', x, y, author: '', createdAt: Date.now() };
   state.frames.push(frame);
   render();
@@ -1802,6 +1809,26 @@ photoInput.addEventListener('change', async (e) => {
     setStatus('échec du chargement de la photo');
   }
 });
+
+// Agrandit le tableau (et son overlay de liens) pour toujours laisser de la
+// marge au-delà du cadre le plus éloigné, plutôt que de le limiter à une
+// taille fixe.
+function updateCanvasSize(){
+  let maxX = 0, maxY = 0;
+  state.frames.forEach(f => {
+    const { w, h } = getFrameSize(f);
+    maxX = Math.max(maxX, f.x + w);
+    maxY = Math.max(maxY, f.y + h);
+  });
+  const width = Math.max(MIN_CANVAS_W, maxX + CANVAS_BUFFER);
+  const height = Math.max(MIN_CANVAS_H, maxY + CANVAS_BUFFER);
+  canvas.style.width = width + 'px';
+  canvas.style.height = height + 'px';
+  linksSvg.style.width = width + 'px';
+  linksSvg.style.height = height + 'px';
+  linksSvg.setAttribute('width', width);
+  linksSvg.setAttribute('height', height);
+}
 
 function render(){
   emptyMsg.style.display = state.frames.length ? 'none' : 'block';
@@ -1977,6 +2004,7 @@ function render(){
     canvas.appendChild(el);
   });
 
+  updateCanvasSize();
   drawLinks();
   drawPageBoundaries();
 }
