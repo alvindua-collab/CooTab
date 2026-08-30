@@ -992,6 +992,22 @@ function renderCahier(){
       ? `${total} question(s) enregistrée(s) pour cette classe, dont ${asked} déjà posée(s).`
       : "Aucune question enregistrée pour cette classe pour l'instant.";
     body.appendChild(stats);
+
+    if(role === 'professeur' && total > 0){
+      const exportRow = document.createElement('div');
+      exportRow.style.cssText = 'display:flex; gap:10px; flex-wrap:wrap; margin-top:4px;';
+      const exportAllBtn = document.createElement('button');
+      exportAllBtn.className = 'btn-ghost';
+      exportAllBtn.textContent = '🖨️ Exporter toutes les questions';
+      exportAllBtn.onclick = () => exportCahierToPdf('all');
+      const exportUnaskedBtn = document.createElement('button');
+      exportUnaskedBtn.className = 'btn-ghost';
+      exportUnaskedBtn.textContent = '🖨️ Exporter les questions non posées';
+      exportUnaskedBtn.onclick = () => exportCahierToPdf('unasked');
+      exportRow.appendChild(exportAllBtn);
+      exportRow.appendChild(exportUnaskedBtn);
+      body.appendChild(exportRow);
+    }
     return;
   }
 
@@ -1199,6 +1215,74 @@ function renderCahier(){
     }
     return;
   }
+}
+
+/* Export du cahier jaune (banque de questions) en PDF, sous forme de liste
+   textuelle — toutes les questions, ou seulement celles pas encore posées. */
+function exportCahierToPdf(filterMode){
+  const list = (filterMode === 'unasked' ? cahierQuestions.filter(q => !q.askedAt) : cahierQuestions.slice())
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+  if(!list.length){
+    alert(filterMode === 'unasked'
+      ? 'Toutes les questions ont déjà été posées : rien à exporter.'
+      : 'Aucune question enregistrée pour cette classe.');
+    return;
+  }
+
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const marginX = 15, maxWidth = 180, lineHeight = 6, bottomLimit = 280;
+  let y = 20;
+
+  const clsName = className(cahierClassId);
+  const modeLabel = filterMode === 'unasked' ? 'Questions non posées uniquement' : 'Toutes les questions';
+
+  pdf.setFontSize(16);
+  pdf.setTextColor(30, 30, 30);
+  pdf.text('Cahier jaune — ' + clsName, marginX, y);
+  y += 7;
+  pdf.setFontSize(9);
+  pdf.setTextColor(110, 110, 110);
+  pdf.text(modeLabel + '  —  Exporté le ' + formatDate(Date.now()), marginX, y);
+  y += 10;
+
+  let num = 1;
+  list.forEach(q => {
+    if(y > bottomLimit){ pdf.addPage(); y = 20; }
+    pdf.setFontSize(11);
+    pdf.setTextColor(20, 20, 20);
+    const qText = `${num}. ${q.text}` + (q.isStudent ? '  [question élève]' : '');
+    pdf.splitTextToSize(qText, maxWidth).forEach(line => {
+      if(y > bottomLimit){ pdf.addPage(); y = 20; }
+      pdf.text(line, marginX, y);
+      y += lineHeight;
+    });
+
+    if(q.answer){
+      pdf.setFontSize(10);
+      pdf.setTextColor(90, 90, 90);
+      pdf.splitTextToSize('Réponse : ' + q.answer, maxWidth - 6).forEach(line => {
+        if(y > bottomLimit){ pdf.addPage(); y = 20; }
+        pdf.text(line, marginX + 6, y);
+        y += lineHeight - 1;
+      });
+    }
+
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(140, 140, 140);
+    if(y > bottomLimit){ pdf.addPage(); y = 20; }
+    pdf.text(
+      'Créée le ' + formatDate(q.createdAt) + ' — ' + (q.askedAt ? ('posée le ' + formatDate(q.askedAt)) : 'pas encore posée'),
+      marginX + 6, y
+    );
+    y += lineHeight + 4;
+    num++;
+  });
+
+  const clsFileSafe = clsName.replace(/[^\p{L}\p{N}\- ]+/gu, '').trim().replace(/\s+/g, '_') || 'classe';
+  const suffix = filterMode === 'unasked' ? '_non_posees' : '_toutes';
+  pdf.save('cahier_jaune_' + clsFileSafe + suffix + '.pdf');
 }
 
 /* Affichage en grand format (question + réponse + statut), utilisé à la fois
